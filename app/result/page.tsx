@@ -7,6 +7,7 @@ import { useOnboardingStore } from "@/lib/store/onboarding";
 
 export default function ResultPage() {
   const context = useOnboardingStore((state) => state.context);
+  const agentSessions = useOnboardingStore((state) => state.agentSessions);
   const hasHydrated = useOnboardingStore((state) => state.hasHydrated);
 
   if (!hasHydrated) {
@@ -47,7 +48,7 @@ export default function ResultPage() {
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {recommendedAgents.map((agent) => (
-          <AgentCard key={agent.type} agent={agent} />
+          <AgentCard key={agent.type} agent={agent} status={agentSessions[agent.type].status} />
         ))}
       </section>
 
