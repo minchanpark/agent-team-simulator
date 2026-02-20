@@ -1,0 +1,7 @@
+interface:
+  display_name: "UI Designer"
+  short_description: "구현 가능한 UI 스펙 작성 스킬"
+  default_prompt: "Use $ui-designer to define implementable UI specs with layout, tokens, states, and a11y notes."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "UI Reviewer"
+  short_description: "출시 품질 기준 UI 리뷰 스킬"
+  default_prompt: "Use $ui-reviewer to review UI quality, spec compliance, and release readiness."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "A11y Auditor"
+  short_description: "WCAG 2.1 AA 접근성 감사 스킬"
+  default_prompt: "Use $a11y-auditor to audit frontend accessibility against WCAG 2.1 AA and report fixes."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Frontend Design"
+  short_description: "프로덕션 UI/UX 디자인 및 구현 스킬"
+  default_prompt: "Use $frontend-design to produce implementable frontend design specs and React + Tailwind code."
+
+policy:
+  allow_implicit_invocation: true

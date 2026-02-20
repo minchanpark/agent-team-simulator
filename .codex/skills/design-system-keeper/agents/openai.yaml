@@ -1,0 +1,7 @@
+interface:
+  display_name: "Design System Keeper"
+  short_description: "디자인 시스템 일관성 유지 스킬"
+  default_prompt: "Use $design-system-keeper to enforce design-system conventions and propose minimal compatible additions."
+
+policy:
+  allow_implicit_invocation: true

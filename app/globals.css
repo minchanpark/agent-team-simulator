@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --app-bg: #f8f7f4;
+}
+
+body {
+  min-height: 100vh;
+  background-color: var(--app-bg);
+  font-family: var(--font-geist-sans), sans-serif;
+}
+
+@layer utilities {
+  .bg-app {
+    background-color: var(--app-bg);
+  }
+}

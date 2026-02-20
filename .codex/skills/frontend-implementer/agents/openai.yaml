@@ -1,0 +1,7 @@
+interface:
+  display_name: "Frontend Implementer"
+  short_description: "UI 스펙 기반 React 구현 스킬"
+  default_prompt: "Use $frontend-implementer to implement React components from UI specs with responsive and accessibility support."
+
+policy:
+  allow_implicit_invocation: true
