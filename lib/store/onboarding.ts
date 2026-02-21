@@ -319,6 +319,20 @@ export const useOnboardingStore = create<OnboardingState>()(
         agentSessions: state.agentSessions,
         teamSession: state.teamSession,
       }),
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<OnboardingState>;
+
+        return {
+          ...currentState,
+          ...persisted,
+          context: persisted.context ?? currentState.context,
+          agentSessions: persisted.agentSessions ?? currentState.agentSessions,
+          teamSession: {
+            ...createDefaultTeamSession(),
+            ...(persisted.teamSession ?? currentState.teamSession),
+          },
+        };
+      },
       onRehydrateStorage: () => (state, error) => {
         if (!error) {
           state?.setHasHydrated(true);

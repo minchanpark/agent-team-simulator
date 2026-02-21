@@ -39,6 +39,12 @@ function parseRequest(payload: unknown): TeamExportMarkdownRequest | null {
 function buildMarkdown(request: TeamExportMarkdownRequest): string {
   const { board, lastTurnResult } = request;
   const today = new Date().toISOString().slice(0, 10);
+  const consensusNotes = Array.isArray(lastTurnResult.consensusNotes)
+    ? lastTurnResult.consensusNotes
+    : [];
+  const changedTasks = Array.isArray(lastTurnResult.changedTasks)
+    ? lastTurnResult.changedTasks
+    : [];
 
   return [
     `# 팀룸 실행 문서 (${today})`,
@@ -52,13 +58,13 @@ function buildMarkdown(request: TeamExportMarkdownRequest): string {
     `- 업데이트 시각: ${board.updatedAt}`,
     "",
     "## 합의 근거",
-    ...(lastTurnResult.consensusNotes.length > 0
-      ? lastTurnResult.consensusNotes.map((note) => `- ${note}`)
+    ...(consensusNotes.length > 0
+      ? consensusNotes.map((note) => `- ${note}`)
       : ["- 합의 노트 없음"]),
     "",
     "## 이번 턴 변경 작업",
-    ...(lastTurnResult.changedTasks.length > 0
-      ? lastTurnResult.changedTasks.map((task) => `- ${task}`)
+    ...(changedTasks.length > 0
+      ? changedTasks.map((task) => `- ${task}`)
       : ["- 변경 작업 없음"]),
     "",
     "## 작업 목록",

@@ -31,10 +31,7 @@ type TrackedEventName =
   | "team_turn_submitted"
   | "team_turn_succeeded"
   | "team_turn_failed"
-  | "execution_board_generated"
-  | "team_consensus_completed"
-  | "team_recovery_applied"
-  | "team_trace_captured";
+  | "execution_board_generated";
 
 function emitTeamEvent(event: TrackedEventName, metadata?: Record<string, unknown>) {
   void fetch("/api/team/events", {
@@ -149,18 +146,12 @@ export function TeamRoomView() {
         appendTeamMessage(createMessage("assistant", payload.result.orchestratorReply, "pm", "normal"));
         emitTeamEvent("team_turn_succeeded", { latencyMs: payload.latencyMs });
         emitTeamEvent("execution_board_generated", { taskCount: payload.result.board.tasks.length });
-        emitTeamEvent("team_consensus_completed");
-
-        if (payload.trace) {
-          emitTeamEvent("team_trace_captured");
-        }
 
         if (payload.recoveryLevel && payload.recoveryLevel !== "none") {
           const notice = getRecoveryNotice(payload.recoveryLevel);
           if (notice) {
             appendTeamMessage(createMessage("assistant", notice, "pm", "recovery"));
           }
-          emitTeamEvent("team_recovery_applied", { recoveryLevel: payload.recoveryLevel });
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다.";

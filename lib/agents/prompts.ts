@@ -149,6 +149,8 @@ ${buildTeamTranscript(messages)}
 [출력 규칙]
 - 반드시 JSON 객체 1개만 출력합니다.
 - 코드블록/마크다운/설명문 금지.
+- priorities/risks/assumptions 각 항목은 짧고 명확하게 작성합니다. (권장 12~60자)
+- 문자열 안에 큰따옴표(\") 사용 금지.
 
 [JSON 스키마]
 {
@@ -213,16 +215,21 @@ ${getConsensusGuardPrompt()}
 - 기존 보드가 있으면 "전체 재작성"이 아니라 변경 근거를 명확히 하여 필요한 부분만 업데이트합니다.
 - 답변은 반드시 JSON 객체 1개로만 출력합니다.
 - 모든 텍스트는 한국어로 작성합니다.
+- JSON 문자열은 모두 한 줄 문자열로 작성하고 줄바꿈 문자를 포함하지 않습니다.
 
 [제약]
-- tasks는 5~10개
+- tasks는 4~6개
 - 각 task는 ownerAgent를 marketing/cs/data/dev 중 하나로 지정
 - dueDate는 ISO 날짜(YYYY-MM-DD)
 - status는 todo/doing/done 중 하나
 - weeklyPlan은 5~7개 체크리스트
-- mdSummary는 사람이 읽기 쉬운 마크다운 문서
 - consensusNotes는 최소 3개
 - changedTasks는 이번 턴에 신규/수정된 task title 목록
+- task title은 12~70자 권장, 문장 끝 마침표 생략
+- metric/rationale은 짧게 작성 (각 40자 이내)
+- 모든 문자열에서 큰따옴표(\") 사용 금지
+- mdSummary는 생략 가능
+- 응답은 1100 토큰 내로 간결하게 작성
 
 [JSON 스키마]
 {
@@ -261,8 +268,73 @@ ${getConsensusGuardPrompt()}
     "weeklyPlan": ["string"],
     "updatedAt": "ISO datetime",
     "version": 1
-  },
-  "mdSummary": "# 실행 요약 ..."
+  }
+}
+`.trim();
+}
+
+export function getPmOrchestratorRepairPrompt(
+  context: UserContext,
+  specialistInsights: SpecialistInsight[],
+  currentBoard: ExecutionBoard | null,
+  messages: TeamRoomMessage[],
+  consensusNotes: string[],
+): string {
+  return `
+당신은 JSON 복구 전용 PM입니다. 아래 정보를 바탕으로 반드시 유효한 JSON 객체 1개만 출력합니다.
+
+${buildBaseContext(context)}
+
+[팀룸 대화 기록]
+${buildTeamTranscript(messages)}
+
+[전문 에이전트 인사이트]
+${specialistInsights
+  .map(
+    (insight) =>
+      `- ${insight.agentType}: ${insight.summary} | priorities=${insight.priorities.join(" / ")} | risks=${insight.risks.join(" / ")}`,
+  )
+  .join("\n")}
+
+[합의 노트]
+${consensusNotes.map((note) => `- ${note}`).join("\n")}
+
+[현재 실행보드]
+${currentBoard ? JSON.stringify(currentBoard, null, 2) : "(기존 보드 없음)"}
+
+[출력 규칙]
+- JSON 외 텍스트 금지.
+- 코드블록 금지.
+- 모든 문자열은 한 줄로 작성.
+- mdSummary는 출력하지 않아도 됨.
+
+[JSON 스키마]
+{
+  "orchestratorReply": "string",
+  "consensusNotes": ["string"],
+  "changedTasks": ["string"],
+  "board": {
+    "projectGoal": "string",
+    "tasks": [
+      {
+        "id": "string",
+        "title": "string",
+        "ownerAgent": "marketing|cs|data|dev",
+        "priority": "high|medium|low",
+        "effort": "S|M|L",
+        "dueDate": "YYYY-MM-DD",
+        "status": "todo|doing|done",
+        "metric": "string",
+        "dependencies": ["string"],
+        "rationale": "string"
+      }
+    ],
+    "kpis": [{ "name": "string", "target": "string", "cadence": "string" }],
+    "risks": [{ "risk": "string", "mitigation": "string" }],
+    "weeklyPlan": ["string"],
+    "updatedAt": "ISO datetime",
+    "version": 1
+  }
 }
 `.trim();
 }

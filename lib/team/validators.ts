@@ -14,6 +14,18 @@ export interface ParsedPmPayload {
   mdSummary: string;
 }
 
+function sanitizeText(value: string, maxLength = 120): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/["“”]/g, "'")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function sanitizeList(values: string[], maxItems = 5, maxLength = 120): string[] {
+  return values.map((value) => sanitizeText(value, maxLength)).filter(Boolean).slice(0, maxItems);
+}
+
 export function extractText(content: Anthropic.Messages.Message["content"]): string {
   return content
     .filter((block): block is Anthropic.TextBlock => block.type === "text")
@@ -105,13 +117,16 @@ function normalizeTask(
       typeof candidate.id === "string" && candidate.id.trim().length > 0
         ? candidate.id.trim()
         : `task-${index + 1}`,
-    title,
+    title: sanitizeText(title, 90),
     ownerAgent,
     priority,
     effort,
     dueDate,
     status,
-    metric: typeof candidate.metric === "string" ? candidate.metric : "주간 실행 완료율",
+    metric:
+      typeof candidate.metric === "string"
+        ? sanitizeText(candidate.metric, 80)
+        : "주간 실행 완료율",
     dependencies:
       Array.isArray(candidate.dependencies) &&
       candidate.dependencies.every((value) => typeof value === "string")
@@ -119,7 +134,7 @@ function normalizeTask(
         : [],
     rationale:
       typeof candidate.rationale === "string"
-        ? candidate.rationale
+        ? sanitizeText(candidate.rationale, 200)
         : "핵심 목표 달성을 위한 우선 과제입니다.",
   };
 }
@@ -255,11 +270,33 @@ export function toSpecialistPayload(
 
   return {
     agentType,
-    summary: candidate.summary.trim(),
-    priorities: priorities.slice(0, 5),
-    risks: risks.slice(0, 5),
-    assumptions: assumptions.slice(0, 5),
+    summary: sanitizeText(candidate.summary, 220),
+    priorities: sanitizeList(priorities, 5, 90),
+    risks: sanitizeList(risks, 5, 90),
+    assumptions: sanitizeList(assumptions, 5, 90),
   };
+}
+
+export function buildBoardSummaryMarkdown(
+  board: ExecutionBoard,
+  consensusNotes: string[],
+  changedTasks: string[],
+): string {
+  return [
+    "# 실행 요약",
+    "",
+    "## 목표",
+    `- ${board.projectGoal}`,
+    "",
+    "## 합의 근거",
+    ...(consensusNotes.length > 0 ? consensusNotes.slice(0, 5).map((note) => `- ${note}`) : ["- 없음"]),
+    "",
+    "## 변경 작업",
+    ...(changedTasks.length > 0 ? changedTasks.slice(0, 8).map((task) => `- ${task}`) : ["- 없음"]),
+    "",
+    "## 이번 주 체크리스트",
+    ...board.weeklyPlan.slice(0, 7).map((item) => `- [ ] ${item}`),
+  ].join("\n");
 }
 
 export function toPmPayload(
@@ -279,14 +316,6 @@ export function toPmPayload(
     mdSummary?: unknown;
   };
 
-  if (typeof candidate.orchestratorReply !== "string" || candidate.orchestratorReply.trim().length === 0) {
-    return null;
-  }
-
-  if (typeof candidate.mdSummary !== "string" || candidate.mdSummary.trim().length === 0) {
-    return null;
-  }
-
   const fallbackVersion = currentBoard ? currentBoard.version + 1 : 1;
   const board = toExecutionBoard(candidate.board, fallbackVersion, agents);
   if (!board) {
@@ -305,11 +334,23 @@ export function toPmPayload(
       )
     : [];
 
+  const normalizedConsensusNotes = sanitizeList(consensusNotes, 6, 140);
+  const normalizedChangedTasks = sanitizeList(changedTasks, 10, 90);
+  const orchestratorReply =
+    typeof candidate.orchestratorReply === "string" && candidate.orchestratorReply.trim().length > 0
+      ? sanitizeText(candidate.orchestratorReply, 220)
+      : "전문 에이전트 의견을 통합해 실행보드를 업데이트했습니다.";
+
+  const mdSummary =
+    typeof candidate.mdSummary === "string" && candidate.mdSummary.trim().length > 0
+      ? candidate.mdSummary.trim()
+      : buildBoardSummaryMarkdown(board, normalizedConsensusNotes, normalizedChangedTasks);
+
   return {
-    orchestratorReply: candidate.orchestratorReply.trim(),
-    consensusNotes,
-    changedTasks,
+    orchestratorReply,
+    consensusNotes: normalizedConsensusNotes,
+    changedTasks: normalizedChangedTasks,
     board,
-    mdSummary: candidate.mdSummary.trim(),
+    mdSummary,
   };
 }

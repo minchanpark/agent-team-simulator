@@ -19,6 +19,7 @@ import {
   TeamTurnSuccessResponse,
   TeamTurnTrace,
 } from "@/lib/types";
+import { parseJsonResponse } from "@/lib/team/validators";
 
 function uniqueStrings(values: string[], limit = 8): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).slice(0, limit);
@@ -134,6 +135,10 @@ export async function orchestrateTeamTurn(params: {
   const pmStart = Date.now();
   let pmPayload: Awaited<ReturnType<typeof runPmOrchestrator>>["payload"] = null;
   let pmModel: string | undefined;
+  let pmMethod: "primary" | "repair" | "failed" = "failed";
+  let pmRawPreview: string | undefined;
+  let pmRawText: string | undefined;
+  let pmCallErrored = false;
 
   try {
     const pmResult = await runPmOrchestrator({
@@ -147,8 +152,12 @@ export async function orchestrateTeamTurn(params: {
     });
     pmPayload = pmResult.payload;
     pmModel = pmResult.model;
+    pmMethod = pmResult.method;
+    pmRawPreview = pmResult.rawPreview;
+    pmRawText = pmResult.rawText;
   } catch {
     pmPayload = null;
+    pmCallErrored = true;
   }
 
   const pmFallback = !pmPayload;
@@ -157,7 +166,13 @@ export async function orchestrateTeamTurn(params: {
     status: pmFallback ? "fallback" : "ok",
     latencyMs: Date.now() - pmStart,
     model: pmModel,
-    detail: pmFallback ? "PM payload parse/call failed" : "PM orchestration succeeded",
+    detail: pmFallback
+      ? pmCallErrored
+        ? "PM call failed"
+        : `PM structured parse miss${pmRawPreview ? ` | preview=${pmRawPreview}` : ""}`
+      : pmMethod === "repair"
+        ? "PM repair prompt로 복구 성공"
+        : "PM orchestration succeeded",
   });
 
   const fallbackBoard = buildFallbackBoard(
@@ -182,15 +197,29 @@ export async function orchestrateTeamTurn(params: {
     8,
   );
 
-  const recoveryLevel = resolveRecoveryLevel(specialistResult.hasFallback, pmFallback);
+  const recoveryLevel = resolveRecoveryLevel(specialistResult.hasFallback, pmCallErrored);
   if (recoveryLevel !== "none") {
     trackTeamEvent("team_recovery_applied", { recoveryLevel });
+  }
+
+  let pmReplyFromRaw: string | null = null;
+  if (!pmPayload && pmRawText) {
+    const parsedRaw = parseJsonResponse(pmRawText);
+    if (parsedRaw && typeof parsedRaw === "object") {
+      const candidate = parsedRaw as { orchestratorReply?: unknown };
+      if (typeof candidate.orchestratorReply === "string" && candidate.orchestratorReply.trim().length > 0) {
+        pmReplyFromRaw = candidate.orchestratorReply.trim();
+      }
+    }
   }
 
   const result: TeamTurnResult = {
     orchestratorReply:
       pmPayload?.orchestratorReply ??
-      "일부 응답을 복구해 실행보드를 재생성했습니다. 우선순위를 확인하고 다음 턴에서 보완해 주세요.",
+      pmReplyFromRaw ??
+      (pmCallErrored
+        ? "일부 응답을 복구해 실행보드를 재생성했습니다. 우선순위를 확인하고 다음 턴에서 보완해 주세요."
+        : "전문 에이전트 합의를 기반으로 실행보드를 업데이트했습니다."),
     specialistInsights: specialistResult.insights,
     consensusNotes: finalConsensusNotes,
     changedTasks,

@@ -50,7 +50,7 @@ function rankPriorities(insights: SpecialistInsight[], context: UserContext): Sc
     });
   });
 
-  return [...scoreMap.entries()]
+  return Array.from(scoreMap.entries())
     .map(([text, score]) => ({ text, score }))
     .sort((left, right) => right.score - left.score)
     .slice(0, 6);

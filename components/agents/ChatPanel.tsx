@@ -178,7 +178,7 @@ export function ChatPanel({ agent, context }: ChatPanelProps) {
   };
 
   const handleGenerateMap = async () => {
-    if (!canStartChat || !session.progress.readyForMap || isGeneratingMap) {
+    if (!canStartChat || isGeneratingMap || hasMapDocument) {
       return;
     }
 
@@ -340,9 +340,9 @@ export function ChatPanel({ agent, context }: ChatPanelProps) {
             </Button>
           </div>
         ) : (
-          session.progress.readyForMap && (
+          session.messages.length > 0 && (
             <Button type="button" onClick={handleGenerateMap} disabled={isGeneratingMap}>
-              에이전트 맵 생성
+              {session.progress.readyForMap ? "에이전트 맵 생성" : "현재 정보로 맵 생성"}
             </Button>
           )
         )}

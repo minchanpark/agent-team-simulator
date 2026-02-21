@@ -15,7 +15,7 @@ export const DEFAULT_MODEL_CANDIDATES = [
 const DEFAULT_POLICY: TeamPolicy = {
   modelCandidates: DEFAULT_MODEL_CANDIDATES,
   specialistRetryLimit: 2,
-  pmRetryLimit: 2,
+  pmRetryLimit: 1,
   maxTasks: 10,
 };
 

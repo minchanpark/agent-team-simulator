@@ -37,6 +37,11 @@ const FALLBACK_USER_MESSAGE: ChatMessage = {
   content: "진단 인터뷰를 시작해 주세요.",
 };
 
+const CONTINUE_USER_MESSAGE: ChatMessage = {
+  role: "user",
+  content: "이전 대화 맥락을 이어서 다음 답변을 생성해 주세요.",
+};
+
 const DIAGNOSIS_DETAIL_TEMPLATES: Record<
   DiagnosticDimension,
   { question: string; reason: string; examples: [string, string, string] }
@@ -202,12 +207,42 @@ function getModelCandidates(): string[] {
 
 function normalizeMessagesForAnthropic(messages: ChatMessage[]): ChatMessage[] {
   const baseMessages = messages.length > 0 ? messages : [FALLBACK_USER_MESSAGE];
+  const normalized = [...baseMessages];
 
-  if (baseMessages[0]?.role === "assistant") {
-    return [FALLBACK_USER_MESSAGE, ...baseMessages];
+  if (normalized[0]?.role === "assistant") {
+    normalized.unshift(FALLBACK_USER_MESSAGE);
   }
 
-  return baseMessages;
+  const last = normalized[normalized.length - 1];
+  if (last?.role === "assistant") {
+    normalized.push(CONTINUE_USER_MESSAGE);
+  }
+
+  return normalized;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  return new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label}_TIMEOUT`));
+    }, timeoutMs);
+
+    promise
+      .then((value) => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        resolve(value);
+      })
+      .catch((error: unknown) => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        reject(error);
+      });
+  });
 }
 
 async function createWithFallback(
@@ -216,32 +251,35 @@ async function createWithFallback(
 ): Promise<Anthropic.Messages.Message> {
   const modelCandidates = getModelCandidates();
   const safeMessages = normalizeMessagesForAnthropic(createPayload.messages);
+  let lastErrorMessage = "";
 
   for (const model of modelCandidates) {
     try {
-      return await anthropic.messages.create({
-        model,
-        max_tokens: 1400,
-        temperature: 0.2,
-        system: createPayload.system,
-        messages: safeMessages.map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
-      });
+      return await withTimeout(
+        anthropic.messages.create({
+          model,
+          max_tokens: 1400,
+          temperature: 0.2,
+          system: createPayload.system,
+          messages: safeMessages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+        }),
+        30000,
+        "CHAT_CALL",
+      );
     } catch (error) {
-      if (error instanceof Anthropic.NotFoundError) {
-        continue;
-      }
-
-      throw error;
+      lastErrorMessage = error instanceof Error ? error.message : "CHAT_CALL_FAILED";
+      continue;
     }
   }
 
   throw new Error(
-    `사용 가능한 모델을 찾지 못했습니다. .env.local의 ANTHROPIC_MODEL 값을 확인해 주세요. 시도한 모델: ${modelCandidates.join(
-      ", ",
-    )}`,
+    lastErrorMessage ||
+      `사용 가능한 모델을 찾지 못했습니다. .env.local의 ANTHROPIC_MODEL 값을 확인해 주세요. 시도한 모델: ${modelCandidates.join(
+        ", ",
+      )}`,
   );
 }
 
@@ -446,18 +484,23 @@ async function createStructuredResponse<T>(
   let lastText = "";
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const response = await createWithFallback(anthropic, createPayload);
-    const text = extractText(response.content);
-    lastText = text;
-    const parsedJson = parseJsonResponse(text);
+    try {
+      const response = await createWithFallback(anthropic, createPayload);
+      const text = extractText(response.content);
+      lastText = text;
+      const parsedJson = parseJsonResponse(text);
 
-    if (!parsedJson) {
+      if (!parsedJson) {
+        continue;
+      }
+
+      const parsed = parser(parsedJson);
+      if (parsed) {
+        return { parsed, lastText };
+      }
+    } catch (error) {
+      lastText = error instanceof Error ? error.message : "STRUCTURED_RESPONSE_FAILED";
       continue;
-    }
-
-    const parsed = parser(parsedJson);
-    if (parsed) {
-      return { parsed, lastText };
     }
   }
 
@@ -598,10 +641,19 @@ export async function POST(request: Request) {
         buildDiagnosisFallback(diagnosisAttempt.lastText, parsedRequest.messages);
 
       if (!diagnosis) {
-        return NextResponse.json(
-          { error: "진단 응답 형식을 해석하지 못했습니다. 잠시 후 다시 시도해 주세요." },
-          { status: 502 },
-        );
+        const fallback = buildDiagnosisFallback("", parsedRequest.messages);
+        if (!fallback) {
+          return NextResponse.json(
+            { error: "진단 응답 형식을 해석하지 못했습니다. 잠시 후 다시 시도해 주세요." },
+            { status: 502 },
+          );
+        }
+
+        return NextResponse.json({
+          mode: "diagnosis",
+          message: fallback.message,
+          progress: fallback.progress,
+        });
       }
 
       return NextResponse.json({
@@ -613,18 +665,22 @@ export async function POST(request: Request) {
 
     let markdown = "";
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const response = await createWithFallback(anthropic, {
-        system: getMapPrompt(
-          parsedRequest.agentType,
-          parsedRequest.context,
-          buildTranscript(parsedRequest.messages),
-        ),
-        messages: parsedRequest.messages,
-      });
+      try {
+        const response = await createWithFallback(anthropic, {
+          system: getMapPrompt(
+            parsedRequest.agentType,
+            parsedRequest.context,
+            buildTranscript(parsedRequest.messages),
+          ),
+          messages: parsedRequest.messages,
+        });
 
-      markdown = normalizeMarkdownResponse(extractText(response.content));
-      if (markdown.length > 0) {
-        break;
+        markdown = normalizeMarkdownResponse(extractText(response.content));
+        if (markdown.length > 0) {
+          break;
+        }
+      } catch {
+        continue;
       }
     }
 
