@@ -1,7 +1,7 @@
 import { AGENT_META } from "@/lib/agents/recommend";
-import { AgentBlueprint, AgentType } from "@/lib/types";
+import { AgentBlueprint, SpecialistAgentType } from "@/lib/types";
 
-export const BLUEPRINTS: Record<AgentType, AgentBlueprint> = {
+export const BLUEPRINTS: Record<SpecialistAgentType, AgentBlueprint> = {
   marketing: {
     tools: ["Claude API", "n8n", "Buffer", "Canva"],
     steps: [
@@ -48,10 +48,10 @@ export const BLUEPRINTS: Record<AgentType, AgentBlueprint> = {
   },
 };
 
-export function getBlueprint(agentType: AgentType): AgentBlueprint {
+export function getBlueprint(agentType: SpecialistAgentType): AgentBlueprint {
   return BLUEPRINTS[agentType];
 }
 
-export function getAgentName(agentType: AgentType): string {
+export function getAgentName(agentType: SpecialistAgentType): string {
   return AGENT_META[agentType].name;
 }

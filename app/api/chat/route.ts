@@ -3,17 +3,17 @@ import { NextResponse } from "next/server";
 import { getDiagnosisPrompt, getMapPrompt } from "@/lib/agents/prompts";
 import {
   AgentMapDocument,
-  AgentType,
   ChatMessage,
   ChatMode,
   ChatRequest,
   DIAGNOSTIC_DIMENSIONS,
   DiagnosticDimension,
   DiagnosticProgress,
+  SpecialistAgentType,
   UserContext,
 } from "@/lib/types";
 
-const AGENT_TYPES: AgentType[] = ["marketing", "cs", "data", "dev"];
+const AGENT_TYPES: SpecialistAgentType[] = ["marketing", "cs", "data", "dev"];
 const CHAT_MODES: ChatMode[] = ["diagnosis", "generate_map"];
 const DEFAULT_MODEL_CANDIDATES = [
   "claude-sonnet-4-5",
@@ -88,8 +88,8 @@ const DIAGNOSIS_DETAIL_TEMPLATES: Record<
   },
 };
 
-function isAgentType(value: string): value is AgentType {
-  return AGENT_TYPES.includes(value as AgentType);
+function isAgentType(value: string): value is SpecialistAgentType {
+  return AGENT_TYPES.includes(value as SpecialistAgentType);
 }
 
 function isChatMode(value: string): value is ChatMode {
@@ -109,8 +109,32 @@ function isUserContext(value: unknown): value is UserContext {
     candidate.painPoints.every((item) => typeof item === "string");
   const hasValidTeamSize =
     candidate.teamSize === "solo" || candidate.teamSize === "small" || candidate.teamSize === "early";
+  const hasValidBudget =
+    candidate.budgetMonthly === null || typeof candidate.budgetMonthly === "number";
+  const hasValidRunway =
+    candidate.runwayMonths === null || typeof candidate.runwayMonths === "number";
+  const hasValidTeamRoles =
+    Array.isArray(candidate.teamRoles) &&
+    candidate.teamRoles.every((role) => typeof role === "string");
+  const hasValidStage =
+    candidate.currentStage === "idea" ||
+    candidate.currentStage === "mvp" ||
+    candidate.currentStage === "beta" ||
+    candidate.currentStage === "launch";
+  const hasValidConstraints =
+    Array.isArray(candidate.constraints) &&
+    candidate.constraints.every((constraint) => typeof constraint === "string");
 
-  return hasValidIdea && hasValidPainPoints && hasValidTeamSize;
+  return (
+    hasValidIdea &&
+    hasValidPainPoints &&
+    hasValidTeamSize &&
+    hasValidBudget &&
+    hasValidRunway &&
+    hasValidTeamRoles &&
+    hasValidStage &&
+    hasValidConstraints
+  );
 }
 
 function isMessages(value: unknown): value is ChatMessage[] {
@@ -450,7 +474,7 @@ function buildTranscript(messages: ChatMessage[]): string {
     .join("\n");
 }
 
-const AGENT_LABELS: Record<AgentType, string> = {
+const AGENT_LABELS: Record<SpecialistAgentType, string> = {
   marketing: "마케팅",
   cs: "CS",
   data: "데이터",
@@ -469,7 +493,7 @@ function normalizeMarkdownResponse(rawText: string): string {
 }
 
 function buildFallbackMapMarkdown(
-  agentType: AgentType,
+  agentType: SpecialistAgentType,
   context: UserContext,
   messages: ChatMessage[],
 ): string {
@@ -528,7 +552,7 @@ function buildFallbackMapMarkdown(
   ].join("\n");
 }
 
-function buildMapDocument(agentType: AgentType, markdown: string): AgentMapDocument {
+function buildMapDocument(agentType: SpecialistAgentType, markdown: string): AgentMapDocument {
   const createdAt = new Date().toISOString();
   const safeTimestamp = createdAt.replace(/[:.]/g, "-");
 

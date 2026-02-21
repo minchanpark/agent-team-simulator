@@ -4,10 +4,10 @@ import Link from "next/link";
 import ChatPanel from "@/components/agents/ChatPanel";
 import { AGENT_META } from "@/lib/agents/recommend";
 import { useOnboardingStore } from "@/lib/store/onboarding";
-import { AgentType } from "@/lib/types";
+import { SpecialistAgentType } from "@/lib/types";
 
 interface AgentChatViewProps {
-  agentType: AgentType;
+  agentType: SpecialistAgentType;
 }
 
 export function AgentChatView({ agentType }: AgentChatViewProps) {

@@ -10,6 +10,10 @@ const highlights = [
     description: "마케팅, CS, 데이터, 개발보조 에이전트와 즉시 대화할 수 있습니다.",
   },
   {
+    title: "통합 팀룸",
+    description: "PM 오케스트레이터가 여러 에이전트를 조율해 실행보드를 자동 갱신합니다.",
+  },
+  {
     title: "구현 청사진",
     description: "도구, 단계, 예상 비용까지 포함한 실행 계획을 받아볼 수 있습니다.",
   },
@@ -47,6 +51,12 @@ export default function HomePage() {
                 className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500"
               >
                 추천 결과 미리보기
+              </Link>
+              <Link
+                href="/team"
+                className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500"
+              >
+                팀룸 바로가기
               </Link>
             </div>
           </div>

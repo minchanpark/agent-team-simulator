@@ -1,8 +1,10 @@
 import {
   AgentMeta,
   AgentType,
+  CurrentStage,
   PainPoint,
   PainPointOption,
+  SpecialistAgentType,
   TeamSize,
   TeamSizeOption,
 } from "@/lib/types";
@@ -28,6 +30,40 @@ export const TEAM_SIZE_OPTIONS: TeamSizeOption[] = [
     value: "early",
     label: "초기 팀(4인+)",
     description: "프로세스와 역할 정리가 필요한 단계",
+  },
+];
+
+export const STAGE_LABELS: Record<CurrentStage, string> = {
+  idea: "아이디어 단계",
+  mvp: "MVP 개발 단계",
+  beta: "베타 운영 단계",
+  launch: "출시/성장 단계",
+};
+
+export const STAGE_OPTIONS: Array<{
+  value: CurrentStage;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "idea",
+    label: "아이디어 단계",
+    description: "문제 정의와 솔루션 탐색이 중심인 단계",
+  },
+  {
+    value: "mvp",
+    label: "MVP 개발",
+    description: "최소 기능 제품을 빠르게 구현/검증하는 단계",
+  },
+  {
+    value: "beta",
+    label: "베타 운영",
+    description: "초기 사용자 피드백 기반으로 제품을 보완하는 단계",
+  },
+  {
+    value: "launch",
+    label: "출시/성장",
+    description: "반복 확장과 성장 지표 개선이 중심인 단계",
   },
 ];
 
@@ -61,7 +97,7 @@ export const PAIN_POINT_LABELS: Record<PainPoint, string> = {
   product_development: "기술/제품 개발",
 };
 
-export const AGENT_META: Record<AgentType, AgentMeta> = {
+export const AGENT_META: Record<SpecialistAgentType, AgentMeta> = {
   marketing: {
     type: "marketing",
     emoji: "🧲",
@@ -108,17 +144,25 @@ export const AGENT_META: Record<AgentType, AgentMeta> = {
   },
 };
 
-const PRIMARY_AGENT_BY_PAIN_POINT: Record<PainPoint, AgentType> = {
+export const TEAM_AGENT_META: Record<AgentType, { emoji: string; name: string }> = {
+  marketing: { emoji: "🧲", name: "마케팅" },
+  cs: { emoji: "💬", name: "CS" },
+  data: { emoji: "📊", name: "데이터" },
+  dev: { emoji: "🛠", name: "개발" },
+  pm: { emoji: "🧭", name: "PM 오케스트레이터" },
+};
+
+const PRIMARY_AGENT_BY_PAIN_POINT: Record<PainPoint, SpecialistAgentType> = {
   content_marketing: "marketing",
   customer_support: "cs",
   data_analysis: "data",
   product_development: "dev",
 };
 
-const FALLBACK_ORDER: AgentType[] = ["marketing", "cs", "data", "dev"];
+const FALLBACK_ORDER: SpecialistAgentType[] = ["marketing", "cs", "data", "dev"];
 
 export function recommendAgents(painPoints: PainPoint[]): AgentMeta[] {
-  const scores = new Map<AgentType, number>(
+  const scores = new Map<SpecialistAgentType, number>(
     FALLBACK_ORDER.map((type, index) => [type, FALLBACK_ORDER.length - index]),
   );
 
@@ -138,7 +182,7 @@ export function recommendAgents(painPoints: PainPoint[]): AgentMeta[] {
     .map((agentType) => AGENT_META[agentType]);
 }
 
-export function isAgentType(value: string): value is AgentType {
+export function isAgentType(value: string): value is SpecialistAgentType {
   return value in AGENT_META;
 }
 
@@ -148,4 +192,20 @@ export function formatPainPoints(painPoints: PainPoint[]): string {
   }
 
   return painPoints.map((painPoint) => PAIN_POINT_LABELS[painPoint]).join(", ");
+}
+
+export function formatTeamRoles(roles: string[]): string {
+  if (roles.length === 0) {
+    return "미입력";
+  }
+
+  return roles.join(", ");
+}
+
+export function formatConstraints(constraints: string[]): string {
+  if (constraints.length === 0) {
+    return "미입력";
+  }
+
+  return constraints.join(", ");
 }

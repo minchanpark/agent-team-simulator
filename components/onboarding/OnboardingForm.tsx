@@ -2,24 +2,45 @@
 
 import Button from "@/components/ui/Button";
 import Card from "@/components/ui/Card";
-import { PAIN_POINT_OPTIONS, TEAM_SIZE_OPTIONS } from "@/lib/agents/recommend";
+import {
+  PAIN_POINT_OPTIONS,
+  STAGE_OPTIONS,
+  TEAM_SIZE_OPTIONS,
+} from "@/lib/agents/recommend";
 import { useOnboardingStore } from "@/lib/store/onboarding";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const React = require("react") as typeof import("react");
 
-const TOTAL_STEPS = 3;
+const TOTAL_STEPS = 4;
+
+function parseListInput(raw: string): string[] {
+  return raw
+    .split(/[\n,]/g)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
 
 export function OnboardingForm() {
   const context = useOnboardingStore((state) => state.context);
   const setIdea = useOnboardingStore((state) => state.setIdea);
   const togglePainPoint = useOnboardingStore((state) => state.togglePainPoint);
   const setTeamSize = useOnboardingStore((state) => state.setTeamSize);
+  const setBudgetMonthly = useOnboardingStore((state) => state.setBudgetMonthly);
+  const setRunwayMonths = useOnboardingStore((state) => state.setRunwayMonths);
+  const setTeamRoles = useOnboardingStore((state) => state.setTeamRoles);
+  const setCurrentStage = useOnboardingStore((state) => state.setCurrentStage);
+  const setConstraints = useOnboardingStore((state) => state.setConstraints);
+
   const [step, setStep] = React.useState(1);
   const [isTransitioning, setIsTransitioning] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
 
-  const progressClassName = step === 1 ? "w-1/3" : step === 2 ? "w-2/3" : "w-full";
+  const [teamRolesInput, setTeamRolesInput] = React.useState(context.teamRoles.join(", "));
+  const [constraintsInput, setConstraintsInput] = React.useState(context.constraints.join("\n"));
+
+  const progressClassName =
+    step === 1 ? "w-1/4" : step === 2 ? "w-2/4" : step === 3 ? "w-3/4" : "w-full";
 
   const validateCurrentStep = (): boolean => {
     if (step === 1 && context.idea.trim().length === 0) {
@@ -32,6 +53,31 @@ export function OnboardingForm() {
       return false;
     }
 
+    if (step === 4) {
+      const parsedRoles = parseListInput(teamRolesInput);
+      const parsedConstraints = parseListInput(constraintsInput);
+
+      if (context.budgetMonthly === null || context.budgetMonthly < 0) {
+        setErrorMessage("월 예산을 숫자로 입력해 주세요. (예: 50)");
+        return false;
+      }
+
+      if (context.runwayMonths === null || context.runwayMonths <= 0) {
+        setErrorMessage("런웨이(개월)를 입력해 주세요. (예: 6)");
+        return false;
+      }
+
+      if (parsedRoles.length === 0) {
+        setErrorMessage("팀 역할을 1개 이상 입력해 주세요.");
+        return false;
+      }
+
+      if (parsedConstraints.length === 0) {
+        setErrorMessage("제약 조건을 1개 이상 입력해 주세요.");
+        return false;
+      }
+    }
+
     setErrorMessage(null);
     return true;
   };
@@ -39,6 +85,11 @@ export function OnboardingForm() {
   const handleNext = () => {
     if (isTransitioning) {
       return;
+    }
+
+    if (step === 4) {
+      setTeamRoles(parseListInput(teamRolesInput));
+      setConstraints(parseListInput(constraintsInput));
     }
 
     if (!validateCurrentStep()) {
@@ -67,9 +118,11 @@ export function OnboardingForm() {
     <Card className="mx-auto w-full max-w-3xl">
       <div className="space-y-6">
         <header className="space-y-3">
-          <p className="text-sm font-medium text-teal-700">진단 {step} / 3</p>
+          <p className="text-sm font-medium text-teal-700">
+            진단 {step} / {TOTAL_STEPS}
+          </p>
           <h1 className="text-2xl font-bold text-slate-900 sm:text-3xl">
-            당신의 스타트업 상황을 알려주세요
+            팀 상황을 기반으로 AI 팀룸을 구성합니다
           </h1>
           <div className="h-2 w-full rounded-full bg-slate-100">
             <div className={["h-full rounded-full bg-teal-600 transition-all", progressClassName].join(" ")} />
@@ -78,11 +131,7 @@ export function OnboardingForm() {
 
         {step === 1 && (
           <section className="space-y-3" aria-labelledby="idea-label">
-            <label
-              id="idea-label"
-              htmlFor="idea"
-              className="text-sm font-semibold text-slate-800"
-            >
+            <label id="idea-label" htmlFor="idea" className="text-sm font-semibold text-slate-800">
               1. 아이디어를 한 줄로 설명해 주세요
             </label>
             <textarea
@@ -131,11 +180,13 @@ export function OnboardingForm() {
         )}
 
         {step === 3 && (
-          <section className="space-y-3" aria-labelledby="team-size-label">
-            <h2 id="team-size-label" className="text-sm font-semibold text-slate-800">
-              3. 현재 팀 규모를 알려주세요
+          <section className="space-y-4" aria-labelledby="team-context-label">
+            <h2 id="team-context-label" className="text-sm font-semibold text-slate-800">
+              3. 현재 팀 규모와 단계를 선택해 주세요
             </h2>
+
             <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">팀 규모</p>
               {TEAM_SIZE_OPTIONS.map((option) => {
                 const isSelected = context.teamSize === option.value;
 
@@ -157,15 +208,114 @@ export function OnboardingForm() {
                       className="mt-1 h-4 w-4 accent-teal-600"
                     />
                     <span>
-                      <span className="block text-sm font-semibold text-slate-900">
-                        {option.label}
-                      </span>
+                      <span className="block text-sm font-semibold text-slate-900">{option.label}</span>
                       <span className="block text-sm text-slate-600">{option.description}</span>
                     </span>
                   </label>
                 );
               })}
             </div>
+
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">현재 단계</p>
+              {STAGE_OPTIONS.map((option) => {
+                const isSelected = context.currentStage === option.value;
+
+                return (
+                  <label
+                    key={option.value}
+                    className={[
+                      "flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-colors",
+                      isSelected
+                        ? "border-teal-500 bg-teal-50"
+                        : "border-slate-200 hover:border-slate-300",
+                    ].join(" ")}
+                  >
+                    <input
+                      type="radio"
+                      name="currentStage"
+                      checked={isSelected}
+                      onChange={() => setCurrentStage(option.value)}
+                      className="mt-1 h-4 w-4 accent-teal-600"
+                    />
+                    <span>
+                      <span className="block text-sm font-semibold text-slate-900">{option.label}</span>
+                      <span className="block text-sm text-slate-600">{option.description}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {step === 4 && (
+          <section className="space-y-4" aria-labelledby="resource-label">
+            <h2 id="resource-label" className="text-sm font-semibold text-slate-800">
+              4. 리소스와 제약 조건을 입력해 주세요
+            </h2>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-1 text-sm">
+                <span className="font-semibold text-slate-800">월 예산 (만원)</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={context.budgetMonthly ?? ""}
+                  onChange={(event) => {
+                    const value = event.target.value.trim();
+                    setBudgetMonthly(value.length > 0 ? Number(value) : null);
+                  }}
+                  className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                  placeholder="예: 50"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm">
+                <span className="font-semibold text-slate-800">런웨이 (개월)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={context.runwayMonths ?? ""}
+                  onChange={(event) => {
+                    const value = event.target.value.trim();
+                    setRunwayMonths(value.length > 0 ? Number(value) : null);
+                  }}
+                  className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                  placeholder="예: 6"
+                />
+              </label>
+            </div>
+
+            <label className="space-y-1 text-sm">
+              <span className="font-semibold text-slate-800">팀 역할 (콤마 또는 줄바꿈으로 구분)</span>
+              <textarea
+                rows={3}
+                value={teamRolesInput}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setTeamRolesInput(value);
+                  setTeamRoles(parseListInput(value));
+                }}
+                placeholder="예: PM, 프론트엔드, 백엔드"
+                className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
+              />
+            </label>
+
+            <label className="space-y-1 text-sm">
+              <span className="font-semibold text-slate-800">제약 조건 (콤마 또는 줄바꿈으로 구분)</span>
+              <textarea
+                rows={4}
+                value={constraintsInput}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setConstraintsInput(value);
+                  setConstraints(parseListInput(value));
+                }}
+                placeholder="예: 외주 불가\n2개월 내 베타 출시"
+                className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
+              />
+            </label>
           </section>
         )}
 

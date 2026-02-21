@@ -2,7 +2,14 @@
 
 import Link from "next/link";
 import AgentCard from "@/components/agents/AgentCard";
-import { formatPainPoints, TEAM_SIZE_LABELS, recommendAgents } from "@/lib/agents/recommend";
+import {
+  formatPainPoints,
+  formatConstraints,
+  formatTeamRoles,
+  STAGE_LABELS,
+  TEAM_SIZE_LABELS,
+  recommendAgents,
+} from "@/lib/agents/recommend";
 import { useOnboardingStore } from "@/lib/store/onboarding";
 
 export default function ResultPage() {
@@ -38,6 +45,23 @@ export default function ResultPage() {
             <p className="mt-1">
               <span className="font-semibold">팀 규모:</span> {TEAM_SIZE_LABELS[context.teamSize]}
             </p>
+            <p className="mt-1">
+              <span className="font-semibold">현재 단계:</span> {STAGE_LABELS[context.currentStage]}
+            </p>
+            <p className="mt-1">
+              <span className="font-semibold">월 예산:</span>{" "}
+              {context.budgetMonthly !== null ? `${context.budgetMonthly}만원` : "미입력"}
+            </p>
+            <p className="mt-1">
+              <span className="font-semibold">런웨이:</span>{" "}
+              {context.runwayMonths !== null ? `${context.runwayMonths}개월` : "미입력"}
+            </p>
+            <p className="mt-1">
+              <span className="font-semibold">팀 역할:</span> {formatTeamRoles(context.teamRoles)}
+            </p>
+            <p className="mt-1">
+              <span className="font-semibold">제약 조건:</span> {formatConstraints(context.constraints)}
+            </p>
           </div>
         ) : (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
@@ -53,6 +77,12 @@ export default function ResultPage() {
       </section>
 
       <footer className="mt-8 flex flex-wrap gap-3">
+        <Link
+          href="/team"
+          className="inline-flex items-center justify-center rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-teal-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
+        >
+          통합 대화 시작
+        </Link>
         <Link
           href="/onboarding"
           className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500"
