@@ -1,12 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { NextResponse } from "next/server";
 import { orchestrateTeamTurn } from "@/lib/team/orchestrator";
 import { toExecutionBoard } from "@/lib/team/validators";
+import { createApiErrorResponse, createSuccessResponse, toUpstreamErrorResponse } from "@/lib/security/error";
+import { guardJsonRequest } from "@/lib/security/request-guard";
 import {
   SpecialistAgentType,
   TEAM_ROOM_DEFAULT_AGENTS,
   TeamRoomMessage,
-  TeamTurnErrorResponse,
   TeamTurnRequest,
   TeamTurnSuccessResponse,
   UserContext,
@@ -129,57 +129,78 @@ function parseRequest(payload: unknown): TeamTurnRequest | null {
   };
 }
 
-function createRecoverableError(message: string): NextResponse<TeamTurnErrorResponse> {
-  return NextResponse.json(
-    {
-      errorCode: "TEAM_TURN_FAILED",
-      message,
-      recoverable: true,
-    },
-    { status: 502 },
-  );
+function createRequestId(): string {
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export async function POST(request: Request): Promise<NextResponse<TeamTurnSuccessResponse | TeamTurnErrorResponse>> {
+function validateRequestPayload(payload: TeamTurnRequest): string | null {
+  if (payload.messages.length > 40) {
+    return "메시지는 최대 40개까지 전송할 수 있습니다.";
+  }
+
+  let totalLength = 0;
+  for (const message of payload.messages) {
+    const currentLength = message.content.trim().length;
+    if (currentLength > 1200) {
+      return "각 메시지는 최대 1200자까지 전송할 수 있습니다.";
+    }
+
+    totalLength += currentLength;
+  }
+
+  if (totalLength > 24000) {
+    return "메시지 총 길이는 최대 24000자까지 전송할 수 있습니다.";
+  }
+
+  return null;
+}
+
+export async function POST(request: Request): Promise<Response> {
+  const missingKeyRequestId = createRequestId();
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return NextResponse.json(
-      {
-        errorCode: "MISSING_API_KEY",
-        message: "서버에 ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다.",
-        recoverable: false,
-      },
-      { status: 500 },
-    );
+    return createApiErrorResponse({
+      status: 500,
+      errorCode: "MISSING_API_KEY",
+      message: "서버에 ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다.",
+      recoverable: false,
+      requestId: missingKeyRequestId,
+    });
+  }
+
+  const guard = await guardJsonRequest(request, {
+    routeKey: "team_turn",
+    maxBodyBytes: 64 * 1024,
+    rateLimit: {
+      perMinute: 6,
+      perDay: 60,
+    },
+    parsePayload: parseRequest,
+    payloadValidator: validateRequestPayload,
+  });
+
+  if (!guard.ok) {
+    return guard.response;
   }
 
   try {
-    const payload = await request.json();
-    const parsedRequest = parseRequest(payload);
-
-    if (!parsedRequest) {
-      return NextResponse.json(
-        {
-          errorCode: "INVALID_REQUEST",
-          message: "요청 본문 형식이 올바르지 않습니다.",
-          recoverable: false,
-        },
-        { status: 400 },
-      );
-    }
-
     const response = await orchestrateTeamTurn({
       apiKey,
-      request: parsedRequest,
+      request: guard.payload,
     });
 
-    return NextResponse.json(response);
+    return createSuccessResponse<TeamTurnSuccessResponse>(response, guard.requestId);
   } catch (error) {
     if (error instanceof Anthropic.APIError) {
-      return createRecoverableError(error.message);
+      return toUpstreamErrorResponse(guard.requestId);
     }
 
-    const errorMessage = error instanceof Error ? error.message : "예상하지 못한 서버 오류";
-    return createRecoverableError(errorMessage);
+    return createApiErrorResponse({
+      status: 500,
+      errorCode: "INTERNAL_ERROR",
+      message: "팀룸 응답 생성 중 오류가 발생했습니다.",
+      recoverable: true,
+      requestId: guard.requestId,
+    });
   }
 }

@@ -25,6 +25,27 @@
 "docs/PRD.md와 docs/AGENT_GUIDELINES.md를 읽고 Next.js 프로젝트를 초기화해줘"
 ```
 
+## 🔐 API 보안 가드레일
+
+- 공통 요청 가드 적용 경로:
+  - `/api/chat`
+  - `/api/team/turn`
+  - `/api/team/export-md`
+  - `/api/team/events`
+- 기본 제한:
+  - `/api/chat`: 분당 12회/IP, 일 120회/IP, 본문 64KB, `messages <= 30`, 메시지당 1200자, 총 18000자
+  - `/api/team/turn`: 분당 6회/IP, 일 60회/IP, 본문 64KB, `messages <= 40`, 메시지당 1200자, 총 24000자
+  - `/api/team/export-md`: 분당 10회/IP
+  - `/api/team/events`: 분당 30회/IP
+- 보안 환경변수:
+  - `ALLOWED_ORIGINS`: 콤마 구분 Origin allowlist (미설정 시 same-origin만 허용)
+  - `SECURITY_GUARDS_ENABLED`: `true/false` (미설정 시 production에서 기본 `true`)
+
+### 운영 한계
+
+- 현재 rate limit은 인메모리 방식이라 인스턴스 간 공유되지 않으며 프로세스 재시작 시 초기화됩니다.
+- 분산 환경에서 강한 보장이 필요하면 추후 Redis/Upstash 등 외부 저장소 기반으로 교체해야 합니다.
+
 ## 🛠 기술 스택
 
 - Next.js 14 (App Router)

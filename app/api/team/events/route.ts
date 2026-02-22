@@ -5,6 +5,9 @@ import {
   trackTeamEvent,
   TeamEventName,
 } from "@/lib/team/telemetry";
+import { createApiErrorResponse, createSuccessResponse } from "@/lib/security/error";
+import { guardJsonRequest } from "@/lib/security/request-guard";
+import { ApiErrorResponse } from "@/lib/types";
 
 interface TeamEventPayload {
   event: TeamEventName;
@@ -28,21 +31,52 @@ function parsePayload(value: unknown): TeamEventPayload | null {
 }
 
 export async function POST(request: Request) {
+  const guard = await guardJsonRequest(request, {
+    routeKey: "team_events",
+    maxBodyBytes: 32 * 1024,
+    rateLimit: {
+      perMinute: 30,
+      perDay: 1000,
+    },
+    parsePayload,
+  });
+
+  if (!guard.ok) {
+    return guard.response;
+  }
+
   try {
-    const payload = await request.json();
-    const parsed = parsePayload(payload);
-
-    if (!parsed) {
-      return NextResponse.json({ error: "유효하지 않은 이벤트 요청입니다." }, { status: 400 });
-    }
-
-    trackTeamEvent(parsed.event, parsed.metadata);
-    return NextResponse.json({ ok: true });
+    trackTeamEvent(guard.payload.event, guard.payload.metadata);
+    return createSuccessResponse({ ok: true }, guard.requestId);
   } catch {
-    return NextResponse.json({ error: "이벤트 저장에 실패했습니다." }, { status: 500 });
+    return createApiErrorResponse({
+      status: 500,
+      errorCode: "INTERNAL_ERROR",
+      message: "이벤트 저장에 실패했습니다.",
+      recoverable: true,
+      requestId: guard.requestId,
+    });
   }
 }
 
-export async function GET() {
-  return NextResponse.json(getTeamMetricsSnapshot());
+export async function GET(): Promise<
+  NextResponse<{
+    total: number;
+    counts: Record<TeamEventName, number>;
+    lastEventAt: string | null;
+    averageLatencyMs: number | null;
+  } | ApiErrorResponse>
+> {
+  const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    return createSuccessResponse(getTeamMetricsSnapshot(), requestId);
+  } catch {
+    return createApiErrorResponse({
+      status: 500,
+      errorCode: "INTERNAL_ERROR",
+      message: "이벤트 조회에 실패했습니다.",
+      recoverable: true,
+      requestId,
+    });
+  }
 }

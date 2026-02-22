@@ -1,9 +1,9 @@
-import { NextResponse } from "next/server";
 import {
   TeamExportMarkdownRequest,
   TeamExportMarkdownResponse,
-  TeamTurnErrorResponse,
 } from "@/lib/types";
+import { createApiErrorResponse, createSuccessResponse } from "@/lib/security/error";
+import { guardJsonRequest } from "@/lib/security/request-guard";
 
 function parseRequest(payload: unknown): TeamExportMarkdownRequest | null {
   if (typeof payload !== "object" || payload === null) {
@@ -89,39 +89,39 @@ function buildMarkdown(request: TeamExportMarkdownRequest): string {
 
 export async function POST(
   request: Request,
-): Promise<NextResponse<TeamExportMarkdownResponse | TeamTurnErrorResponse>> {
+): Promise<Response> {
+  const guard = await guardJsonRequest(request, {
+    routeKey: "team_export_md",
+    maxBodyBytes: 64 * 1024,
+    rateLimit: {
+      perMinute: 10,
+      perDay: 600,
+    },
+    parsePayload: parseRequest,
+  });
+
+  if (!guard.ok) {
+    return guard.response;
+  }
+
   try {
-    const payload = await request.json();
-    const parsedRequest = parseRequest(payload);
-
-    if (!parsedRequest) {
-      return NextResponse.json(
-        {
-          errorCode: "INVALID_REQUEST",
-          message: "요청 본문 형식이 올바르지 않습니다.",
-          recoverable: false,
-        },
-        { status: 400 },
-      );
-    }
-
-    const markdown = buildMarkdown(parsedRequest);
+    const markdown = buildMarkdown(guard.payload);
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 
-    return NextResponse.json({
-      markdown,
-      fileName: `team-room-summary-${timestamp}.md`,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "예상하지 못한 서버 오류";
-
-    return NextResponse.json(
+    return createSuccessResponse<TeamExportMarkdownResponse>(
       {
-        errorCode: "EXPORT_FAILED",
-        message,
-        recoverable: true,
+        markdown,
+        fileName: `team-room-summary-${timestamp}.md`,
       },
-      { status: 500 },
+      guard.requestId,
     );
+  } catch {
+    return createApiErrorResponse({
+      status: 500,
+      errorCode: "INTERNAL_ERROR",
+      message: "마크다운 생성에 실패했습니다.",
+      recoverable: true,
+      requestId: guard.requestId,
+    });
   }
 }

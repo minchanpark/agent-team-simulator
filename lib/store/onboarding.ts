@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { createJSONStorage, persist } from "zustand/middleware";
+import { createJSONStorage, persist, StateStorage } from "zustand/middleware";
 import {
   AgentMapDocument,
   AgentSession,
@@ -18,6 +18,26 @@ import {
   TeamTurnResult,
   UserContext,
 } from "@/lib/types";
+
+const CURRENT_SCHEMA_VERSION = 3;
+const PERSIST_KEY = "onboarding-context-v3";
+const STORAGE_MODE_KEY = "onboarding-storage-mode";
+
+type StorageMode = "session" | "local";
+
+interface SnapshotPayload {
+  schemaVersion: number;
+  exportedAt: string;
+  storageMode: StorageMode;
+  context: UserContext;
+  agentSessions: Record<SpecialistAgentType, AgentSession>;
+  teamSession: TeamSession;
+}
+
+interface SnapshotImportResult {
+  ok: boolean;
+  error?: string;
+}
 
 const DEFAULT_CONTEXT: UserContext = {
   idea: "",
@@ -69,12 +89,117 @@ function createDefaultTeamSession(): TeamSession {
   };
 }
 
+function isBrowser(): boolean {
+  return typeof window !== "undefined";
+}
+
+function getStorageByMode(mode: StorageMode): Storage | null {
+  if (!isBrowser()) {
+    return null;
+  }
+
+  return mode === "local" ? window.localStorage : window.sessionStorage;
+}
+
+function readStorageMode(): StorageMode {
+  if (!isBrowser()) {
+    return "session";
+  }
+
+  const raw = window.localStorage.getItem(STORAGE_MODE_KEY);
+  return raw === "local" ? "local" : "session";
+}
+
+function persistStorageMode(mode: StorageMode): void {
+  if (!isBrowser()) {
+    return;
+  }
+
+  window.localStorage.setItem(STORAGE_MODE_KEY, mode);
+}
+
+const dynamicStorage: StateStorage = {
+  getItem(name) {
+    const preferredMode = readStorageMode();
+    const preferredStorage = getStorageByMode(preferredMode);
+    const fallbackStorage = getStorageByMode(preferredMode === "local" ? "session" : "local");
+
+    const preferredValue = preferredStorage?.getItem(name);
+    if (preferredValue !== null && preferredValue !== undefined) {
+      return preferredValue;
+    }
+
+    const fallbackValue = fallbackStorage?.getItem(name);
+    return fallbackValue ?? null;
+  },
+  setItem(name, value) {
+    const preferredMode = readStorageMode();
+    const preferredStorage = getStorageByMode(preferredMode);
+    const fallbackStorage = getStorageByMode(preferredMode === "local" ? "session" : "local");
+
+    preferredStorage?.setItem(name, value);
+    fallbackStorage?.removeItem(name);
+  },
+  removeItem(name) {
+    window.localStorage.removeItem(name);
+    window.sessionStorage.removeItem(name);
+  },
+};
+
+function isSnapshotPayload(value: unknown): value is SnapshotPayload {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<SnapshotPayload>;
+  if (!candidate.context || typeof candidate.context !== "object") {
+    return false;
+  }
+
+  if (!candidate.agentSessions || typeof candidate.agentSessions !== "object") {
+    return false;
+  }
+
+  if (!candidate.teamSession || typeof candidate.teamSession !== "object") {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeStorageMode(mode: unknown): StorageMode {
+  return mode === "local" ? "local" : "session";
+}
+
+function movePersistedValue(targetMode: StorageMode): void {
+  const sourceMode: StorageMode = targetMode === "local" ? "session" : "local";
+  const source = getStorageByMode(sourceMode);
+  const target = getStorageByMode(targetMode);
+
+  if (!source || !target) {
+    return;
+  }
+
+  const value = source.getItem(PERSIST_KEY);
+  if (!value) {
+    return;
+  }
+
+  target.setItem(PERSIST_KEY, value);
+  source.removeItem(PERSIST_KEY);
+}
+
 interface OnboardingState {
+  schemaVersion: number;
+  storageMode: StorageMode;
   context: UserContext;
   agentSessions: Record<SpecialistAgentType, AgentSession>;
   teamSession: TeamSession;
   hasHydrated: boolean;
   setHasHydrated: (hydrated: boolean) => void;
+  setStorageMode: (mode: StorageMode) => void;
+  exportSnapshot: () => string;
+  importSnapshot: (raw: string) => SnapshotImportResult;
   setIdea: (idea: string) => void;
   togglePainPoint: (painPoint: UserContext["painPoints"][number]) => void;
   setTeamSize: (teamSize: UserContext["teamSize"]) => void;
@@ -105,13 +230,78 @@ interface OnboardingState {
 
 export const useOnboardingStore = create<OnboardingState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      storageMode: readStorageMode(),
       context: DEFAULT_CONTEXT,
       agentSessions: createDefaultAgentSessions(),
       teamSession: createDefaultTeamSession(),
       hasHydrated: false,
       setHasHydrated: (hydrated) =>
         set((state) => (state.hasHydrated === hydrated ? state : { hasHydrated: hydrated })),
+      setStorageMode: (mode) => {
+        const normalizedMode = normalizeStorageMode(mode);
+        persistStorageMode(normalizedMode);
+        movePersistedValue(normalizedMode);
+
+        set((state) =>
+          state.storageMode === normalizedMode
+            ? state
+            : {
+                storageMode: normalizedMode,
+              },
+        );
+      },
+      exportSnapshot: () => {
+        const state = get();
+        const snapshot: SnapshotPayload = {
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          exportedAt: new Date().toISOString(),
+          storageMode: state.storageMode,
+          context: state.context,
+          agentSessions: state.agentSessions,
+          teamSession: state.teamSession,
+        };
+
+        return JSON.stringify(snapshot, null, 2);
+      },
+      importSnapshot: (raw) => {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (!isSnapshotPayload(parsed)) {
+            return {
+              ok: false,
+              error: "스냅샷 형식이 올바르지 않습니다.",
+            };
+          }
+
+          const targetMode = normalizeStorageMode(parsed.storageMode);
+          persistStorageMode(targetMode);
+
+          set(() => ({
+            schemaVersion: CURRENT_SCHEMA_VERSION,
+            storageMode: targetMode,
+            context: parsed.context,
+            agentSessions: {
+              ...createDefaultAgentSessions(),
+              ...parsed.agentSessions,
+            },
+            teamSession: {
+              ...createDefaultTeamSession(),
+              ...parsed.teamSession,
+            },
+          }));
+
+          return {
+            ok: true,
+          };
+        } catch {
+          return {
+            ok: false,
+            error: "JSON 파싱에 실패했습니다.",
+          };
+        }
+      },
       setIdea: (idea) =>
         set((state) => ({
           context: { ...state.context, idea },
@@ -190,8 +380,7 @@ export const useOnboardingStore = create<OnboardingState>()(
         set((state) => {
           const currentSession = state.agentSessions[agentType];
           const hasMapDocument = Boolean(currentSession.mapDocument);
-          const nextStatus =
-            hasMapDocument ? "mapped" : progress.readyForMap ? "ready" : "diagnosing";
+          const nextStatus = hasMapDocument ? "mapped" : progress.readyForMap ? "ready" : "diagnosing";
 
           return {
             agentSessions: {
@@ -305,26 +494,34 @@ export const useOnboardingStore = create<OnboardingState>()(
           teamSession: createDefaultTeamSession(),
         })),
       reset: () =>
-        set({
+        set((state) => ({
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          storageMode: state.storageMode,
           context: DEFAULT_CONTEXT,
           agentSessions: createDefaultAgentSessions(),
           teamSession: createDefaultTeamSession(),
-        }),
+        })),
     }),
     {
-      name: "onboarding-context-v2",
-      storage: createJSONStorage(() => sessionStorage),
+      name: PERSIST_KEY,
+      storage: createJSONStorage(() => dynamicStorage),
       partialize: (state) => ({
+        schemaVersion: state.schemaVersion,
+        storageMode: state.storageMode,
         context: state.context,
         agentSessions: state.agentSessions,
         teamSession: state.teamSession,
       }),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<OnboardingState>;
+        const normalizedMode = normalizeStorageMode(persisted.storageMode);
+        persistStorageMode(normalizedMode);
 
         return {
           ...currentState,
           ...persisted,
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          storageMode: normalizedMode,
           context: persisted.context ?? currentState.context,
           agentSessions: persisted.agentSessions ?? currentState.agentSessions,
           teamSession: {

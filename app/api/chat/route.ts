@@ -1,20 +1,17 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { NextResponse } from "next/server";
 import { getDiagnosisPrompt, getMapPrompt } from "@/lib/agents/prompts";
+import { parseChatRequest, validateChatRequestPayload } from "@/lib/chat/validator";
+import { createApiErrorResponse, createSuccessResponse, toUpstreamErrorResponse } from "@/lib/security/error";
+import { guardJsonRequest } from "@/lib/security/request-guard";
 import {
   AgentMapDocument,
   ChatMessage,
-  ChatMode,
-  ChatRequest,
   DIAGNOSTIC_DIMENSIONS,
   DiagnosticDimension,
   DiagnosticProgress,
   SpecialistAgentType,
   UserContext,
 } from "@/lib/types";
-
-const AGENT_TYPES: SpecialistAgentType[] = ["marketing", "cs", "data", "dev"];
-const CHAT_MODES: ChatMode[] = ["diagnosis", "generate_map"];
 const DEFAULT_MODEL_CANDIDATES = [
   "claude-sonnet-4-5",
   "claude-sonnet-4-20250514",
@@ -92,101 +89,6 @@ const DIAGNOSIS_DETAIL_TEMPLATES: Record<
     ],
   },
 };
-
-function isAgentType(value: string): value is SpecialistAgentType {
-  return AGENT_TYPES.includes(value as SpecialistAgentType);
-}
-
-function isChatMode(value: string): value is ChatMode {
-  return CHAT_MODES.includes(value as ChatMode);
-}
-
-function isUserContext(value: unknown): value is UserContext {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const candidate = value as UserContext;
-
-  const hasValidIdea = typeof candidate.idea === "string";
-  const hasValidPainPoints =
-    Array.isArray(candidate.painPoints) &&
-    candidate.painPoints.every((item) => typeof item === "string");
-  const hasValidTeamSize =
-    candidate.teamSize === "solo" || candidate.teamSize === "small" || candidate.teamSize === "early";
-  const hasValidBudget =
-    candidate.budgetMonthly === null || typeof candidate.budgetMonthly === "number";
-  const hasValidRunway =
-    candidate.runwayMonths === null || typeof candidate.runwayMonths === "number";
-  const hasValidTeamRoles =
-    Array.isArray(candidate.teamRoles) &&
-    candidate.teamRoles.every((role) => typeof role === "string");
-  const hasValidStage =
-    candidate.currentStage === "idea" ||
-    candidate.currentStage === "mvp" ||
-    candidate.currentStage === "beta" ||
-    candidate.currentStage === "launch";
-  const hasValidConstraints =
-    Array.isArray(candidate.constraints) &&
-    candidate.constraints.every((constraint) => typeof constraint === "string");
-
-  return (
-    hasValidIdea &&
-    hasValidPainPoints &&
-    hasValidTeamSize &&
-    hasValidBudget &&
-    hasValidRunway &&
-    hasValidTeamRoles &&
-    hasValidStage &&
-    hasValidConstraints
-  );
-}
-
-function isMessages(value: unknown): value is ChatMessage[] {
-  if (!Array.isArray(value)) {
-    return false;
-  }
-
-  return value.every(
-    (message) =>
-      typeof message === "object" &&
-      message !== null &&
-      (message as ChatMessage).role !== undefined &&
-      ((message as ChatMessage).role === "user" || (message as ChatMessage).role === "assistant") &&
-      typeof (message as ChatMessage).content === "string",
-  );
-}
-
-function parseRequest(payload: unknown): ChatRequest | null {
-  if (typeof payload !== "object" || payload === null) {
-    return null;
-  }
-
-  const candidate = payload as Partial<ChatRequest>;
-
-  if (!candidate.mode || !isChatMode(candidate.mode)) {
-    return null;
-  }
-
-  if (!candidate.agentType || !isAgentType(candidate.agentType)) {
-    return null;
-  }
-
-  if (!candidate.context || !isUserContext(candidate.context)) {
-    return null;
-  }
-
-  if (!candidate.messages || !isMessages(candidate.messages)) {
-    return null;
-  }
-
-  return {
-    mode: candidate.mode,
-    agentType: candidate.agentType,
-    context: candidate.context,
-    messages: candidate.messages,
-  };
-}
 
 function extractText(content: Anthropic.Messages.Message["content"]): string {
   return content
@@ -608,22 +510,40 @@ function buildMapDocument(agentType: SpecialistAgentType, markdown: string): Age
   };
 }
 
-export async function POST(request: Request) {
+function createRequestId(): string {
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export async function POST(request: Request): Promise<Response> {
+  const missingKeyRequestId = createRequestId();
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return NextResponse.json(
-      { error: "서버에 ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다." },
-      { status: 500 },
-    );
+    return createApiErrorResponse({
+      status: 500,
+      errorCode: "MISSING_API_KEY",
+      message: "서버에 ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다.",
+      recoverable: false,
+      requestId: missingKeyRequestId,
+    });
+  }
+
+  const guard = await guardJsonRequest(request, {
+    routeKey: "chat",
+    maxBodyBytes: 64 * 1024,
+    rateLimit: {
+      perMinute: 12,
+      perDay: 120,
+    },
+    parsePayload: parseChatRequest,
+    payloadValidator: validateChatRequestPayload,
+  });
+
+  if (!guard.ok) {
+    return guard.response;
   }
 
   try {
-    const payload = await request.json();
-    const parsedRequest = parseRequest(payload);
-
-    if (!parsedRequest) {
-      return NextResponse.json({ error: "요청 본문 형식이 올바르지 않습니다." }, { status: 400 });
-    }
+    const parsedRequest = guard.payload;
 
     const anthropic = new Anthropic({ apiKey });
 
@@ -643,24 +563,33 @@ export async function POST(request: Request) {
       if (!diagnosis) {
         const fallback = buildDiagnosisFallback("", parsedRequest.messages);
         if (!fallback) {
-          return NextResponse.json(
-            { error: "진단 응답 형식을 해석하지 못했습니다. 잠시 후 다시 시도해 주세요." },
-            { status: 502 },
-          );
+          return createApiErrorResponse({
+            status: 502,
+            errorCode: "UPSTREAM_UNAVAILABLE",
+            message: "진단 응답 형식을 해석하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            recoverable: true,
+            requestId: guard.requestId,
+          });
         }
 
-        return NextResponse.json({
-          mode: "diagnosis",
-          message: fallback.message,
-          progress: fallback.progress,
-        });
+        return createSuccessResponse(
+          {
+            mode: "diagnosis" as const,
+            message: fallback.message,
+            progress: fallback.progress,
+          },
+          guard.requestId,
+        );
       }
 
-      return NextResponse.json({
-        mode: "diagnosis",
-        message: diagnosis.message,
-        progress: diagnosis.progress,
-      });
+      return createSuccessResponse(
+        {
+          mode: "diagnosis" as const,
+          message: diagnosis.message,
+          progress: diagnosis.progress,
+        },
+        guard.requestId,
+      );
     }
 
     let markdown = "";
@@ -694,16 +623,24 @@ export async function POST(request: Request) {
 
     const document = buildMapDocument(parsedRequest.agentType, markdown);
 
-    return NextResponse.json({
-      mode: "generate_map",
-      document,
-    });
+    return createSuccessResponse(
+      {
+        mode: "generate_map" as const,
+        document,
+      },
+      guard.requestId,
+    );
   } catch (error) {
     if (error instanceof Anthropic.APIError) {
-      return NextResponse.json({ error: error.message }, { status: error.status ?? 500 });
+      return toUpstreamErrorResponse(guard.requestId);
     }
 
-    const errorMessage = error instanceof Error ? error.message : "예상하지 못한 서버 오류";
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    return createApiErrorResponse({
+      status: 500,
+      errorCode: "INTERNAL_ERROR",
+      message: "예상하지 못한 서버 오류가 발생했습니다.",
+      recoverable: true,
+      requestId: guard.requestId,
+    });
   }
 }

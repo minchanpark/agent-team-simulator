@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { TEAM_AGENT_META } from "@/lib/agents/recommend";
 import { ExecutionTask, TaskStatus } from "@/lib/types";
 
@@ -80,4 +81,4 @@ export function TaskBoard({ tasks, onUpdateStatus }: TaskBoardProps) {
   );
 }
 
-export default TaskBoard;
+export default memo(TaskBoard);

@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { TEAM_AGENT_META } from "@/lib/agents/recommend";
 import { TeamRoomMessage } from "@/lib/types";
 
@@ -83,4 +84,4 @@ export function TeamChatTimeline({ messages, isRunning }: TeamChatTimelineProps)
   );
 }
 
-export default TeamChatTimeline;
+export default memo(TeamChatTimeline);

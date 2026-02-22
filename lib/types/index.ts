@@ -1,5 +1,13 @@
 export type AgentType = "marketing" | "cs" | "data" | "dev" | "pm";
 export type SpecialistAgentType = Exclude<AgentType, "pm">;
+export type ApiErrorCode =
+  | "INVALID_REQUEST"
+  | "REQUEST_TOO_LARGE"
+  | "UNSUPPORTED_ORIGIN"
+  | "RATE_LIMITED"
+  | "UPSTREAM_UNAVAILABLE"
+  | "MISSING_API_KEY"
+  | "INTERNAL_ERROR";
 
 export type TeamSize = "solo" | "small" | "early";
 export type CurrentStage = "idea" | "mvp" | "beta" | "launch";
@@ -267,10 +275,15 @@ export interface TeamTurnSuccessResponse {
   recoveryLevel?: RecoveryLevel;
 }
 
-export interface TeamTurnErrorResponse {
-  errorCode: string;
+export interface ApiErrorResponse {
+  errorCode: ApiErrorCode;
   message: string;
   recoverable: boolean;
+  requestId: string;
+  retryAfterSec?: number;
+}
+
+export interface TeamTurnErrorResponse extends ApiErrorResponse {
   fallbackBoard?: ExecutionBoard | null;
 }
 
