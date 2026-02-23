@@ -29,6 +29,7 @@ export function ChatPanel({ agent, context }: ChatPanelProps) {
     isGeneratingMap,
     diagnosisErrorMessage,
     mapErrorMessage,
+    streamingDiagnosisText,
     retryAfterSec,
     readyCount,
     missingLabels,
@@ -81,6 +82,7 @@ export function ChatPanel({ agent, context }: ChatPanelProps) {
           messages={session.messages}
           isSubmittingDiagnosis={isSubmittingDiagnosis}
           isGeneratingMap={isGeneratingMap}
+          streamingDiagnosisText={streamingDiagnosisText}
           diagnosisErrorMessage={diagnosisErrorMessage}
           mapErrorMessage={mapErrorMessage}
           onRetryQuestion={handleRetryQuestion}

@@ -90,6 +90,33 @@ ${buildBaseContext(context)}
 `.trim();
 }
 
+export function getDiagnosisStreamPrompt(agentType: SpecialistAgentType, context: UserContext): string {
+  return `
+${AGENT_DIAGNOSIS_FOCUS[agentType]}
+
+${buildBaseContext(context)}
+
+[진단 목표]
+- 아래 필수 진단 차원 5개를 파악하기 위한 다음 질문 1개를 생성합니다.
+- 필수 진단 차원:
+  1) goal: 이번 분기/월의 구체적 목표
+  2) bottleneck: 현재 가장 큰 병목
+  3) target: 핵심 대상 고객/사용자
+  4) resource: 인력/예산/시간 제약
+  5) metric: 성공 판단 지표
+
+[출력 규칙]
+- JSON, 코드블록, 마크다운 없이 일반 텍스트만 출력합니다.
+- 다음 3줄 형식을 기본으로 사용합니다.
+  1) "질문: ..." (핵심 질문 1문장)
+  2) "이유: ..." (왜 필요한지 1문장)
+  3) "예시 답변: ..." (2~3개 예시를 "/"로 구분)
+- 질문은 구체적으로 작성합니다. (권장 35자 이상)
+- 필수 차원이 모두 충족되었다고 판단되면 "진단 핵심 항목이 모두 수집되었습니다. 에이전트 맵 생성 버튼을 눌러 결과를 확인하세요." 한 문장만 출력합니다.
+- 한국어로 작성합니다.
+`.trim();
+}
+
 export function getMapPrompt(
   agentType: SpecialistAgentType,
   context: UserContext,

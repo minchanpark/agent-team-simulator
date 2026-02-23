@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { parseSseEvents } from "@/lib/chat/sse";
 import { useOnboardingStore } from "@/lib/store/onboarding";
 import {
   AgentMeta,
@@ -10,6 +11,8 @@ import {
   ChatResponse,
   DIAGNOSTIC_DIMENSIONS,
   DiagnosticDimension,
+  DiagnosisStreamDoneData,
+  DiagnosisStreamTokenData,
   UserContext,
 } from "@/lib/types";
 
@@ -31,6 +34,11 @@ interface QuickActionOption {
   id: QuickActionTemplate;
   label: string;
   prompt: string;
+}
+
+interface ParsedDiagnosisStreamEvent {
+  event: string;
+  data: unknown;
 }
 
 const DIAGNOSTIC_LABELS: Record<DiagnosticDimension, string> = {
@@ -163,6 +171,59 @@ async function parseApiFailure(response: Response, fallbackMessage: string): Pro
   };
 }
 
+function isDiagnosisStreamTokenData(value: unknown): value is DiagnosisStreamTokenData {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<DiagnosisStreamTokenData>;
+  return typeof candidate.text === "string";
+}
+
+function isApiErrorResponse(value: unknown): value is ApiErrorResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<ApiErrorResponse>;
+  const hasErrorCode = typeof candidate.errorCode === "string";
+  const hasMessage = typeof candidate.message === "string";
+  const hasRecoverable = typeof candidate.recoverable === "boolean";
+  const hasRequestId = typeof candidate.requestId === "string";
+
+  return hasErrorCode && hasMessage && hasRecoverable && hasRequestId;
+}
+
+function isDiagnosisStreamDoneData(value: unknown): value is DiagnosisStreamDoneData {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<DiagnosisStreamDoneData>;
+  if (typeof candidate.message !== "string") {
+    return false;
+  }
+
+  const progress = candidate.progress as DiagnosisStreamDoneData["progress"] | undefined;
+  if (!progress || typeof progress !== "object") {
+    return false;
+  }
+
+  const hasCompleted = Array.isArray(progress.completed);
+  const hasMissing = Array.isArray(progress.missing);
+  const hasReadyForMap = typeof progress.readyForMap === "boolean";
+  return hasCompleted && hasMissing && hasReadyForMap;
+}
+
+function toStreamFailure(payload: ApiErrorResponse): RequestFailure {
+  return {
+    message: payload.message,
+    code: payload.errorCode,
+    recoverable: payload.recoverable,
+    retryAfterSec: payload.retryAfterSec,
+  };
+}
+
 export function useAgentChat({ agent, context }: UseAgentChatParams) {
   const hasHydrated = useOnboardingStore((state) => state.hasHydrated);
   const session = useOnboardingStore((state) => state.agentSessions[agent.type]);
@@ -176,6 +237,7 @@ export function useAgentChat({ agent, context }: UseAgentChatParams) {
   const [isGeneratingMap, setIsGeneratingMap] = useState(false);
   const [diagnosisErrorMessage, setDiagnosisErrorMessage] = useState<string | null>(null);
   const [mapErrorMessage, setMapErrorMessage] = useState<string | null>(null);
+  const [streamingDiagnosisText, setStreamingDiagnosisText] = useState("");
   const [retryAfterSec, setRetryAfterSec] = useState(0);
 
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -207,10 +269,21 @@ export function useAgentChat({ agent, context }: UseAgentChatParams) {
 
   useEffect(() => {
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [session.messages, session.mapDocument, isSubmittingDiagnosis, isGeneratingMap, diagnosisErrorMessage, mapErrorMessage]);
+  }, [
+    session.messages,
+    session.mapDocument,
+    isSubmittingDiagnosis,
+    isGeneratingMap,
+    diagnosisErrorMessage,
+    mapErrorMessage,
+    streamingDiagnosisText,
+  ]);
 
   const requestDiagnosis = useCallback(
-    async (messages: ChatMessage[]) => {
+    async (
+      messages: ChatMessage[],
+      onToken: (token: string) => void,
+    ): Promise<DiagnosisStreamDoneData> => {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -226,16 +299,68 @@ export function useAgentChat({ agent, context }: UseAgentChatParams) {
         throw await parseApiFailure(response, "진단 질문을 생성하지 못했습니다.");
       }
 
-      const payload = (await response.json()) as ChatResponse;
-      if (payload.mode !== "diagnosis") {
+      if (!response.body) {
         throw {
-          message: "진단 응답 형식이 올바르지 않습니다.",
-          code: "INVALID_REQUEST",
-          recoverable: false,
+          message: "진단 스트리밍 응답 본문을 읽을 수 없습니다.",
+          code: "UNKNOWN",
+          recoverable: true,
         } as RequestFailure;
       }
 
-      return payload;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = "";
+      let donePayload: DiagnosisStreamDoneData | null = null;
+
+      const handleEvents = (events: ParsedDiagnosisStreamEvent[]): void => {
+        for (const event of events) {
+          if (event.event === "token" && isDiagnosisStreamTokenData(event.data)) {
+            onToken(event.data.text);
+            continue;
+          }
+
+          if (event.event === "done" && isDiagnosisStreamDoneData(event.data)) {
+            donePayload = event.data;
+            continue;
+          }
+
+          if (event.event === "error" && isApiErrorResponse(event.data)) {
+            throw toStreamFailure(event.data);
+          }
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        buffered += decoder.decode(value, { stream: true });
+        const parsed = parseSseEvents(buffered);
+        buffered = parsed.remaining;
+        handleEvents(parsed.events as ParsedDiagnosisStreamEvent[]);
+
+        if (donePayload) {
+          await reader.cancel();
+          return donePayload;
+        }
+      }
+
+      buffered += decoder.decode();
+      const finalParsed = parseSseEvents(buffered);
+      handleEvents(finalParsed.events as ParsedDiagnosisStreamEvent[]);
+
+      const resolvedDonePayload = donePayload;
+      if (!resolvedDonePayload) {
+        throw {
+          message: "진단 스트리밍 응답 형식이 올바르지 않습니다.",
+          code: "UNKNOWN",
+          recoverable: true,
+        } as RequestFailure;
+      }
+
+      return resolvedDonePayload;
     },
     [agent.type, context],
   );
@@ -274,10 +399,13 @@ export function useAgentChat({ agent, context }: UseAgentChatParams) {
   const runDiagnosisTurn = useCallback(
     async (messages: ChatMessage[]) => {
       setDiagnosisErrorMessage(null);
+      setStreamingDiagnosisText("");
       setIsSubmittingDiagnosis(true);
 
       try {
-        const diagnosis = await requestDiagnosis(messages);
+        const diagnosis = await requestDiagnosis(messages, (token) => {
+          setStreamingDiagnosisText((current) => current + token);
+        });
         appendAgentMessage(agent.type, {
           role: "assistant",
           content: diagnosis.message,
@@ -293,6 +421,7 @@ export function useAgentChat({ agent, context }: UseAgentChatParams) {
         }
       } finally {
         setIsSubmittingDiagnosis(false);
+        setStreamingDiagnosisText("");
       }
     },
     [agent.type, appendAgentMessage, requestDiagnosis, setAgentProgress],
@@ -389,6 +518,7 @@ export function useAgentChat({ agent, context }: UseAgentChatParams) {
     setInput("");
     setDiagnosisErrorMessage(null);
     setMapErrorMessage(null);
+    setStreamingDiagnosisText("");
     setRetryAfterSec(0);
     resetAgentSession(agent.type);
   }, [agent.type, resetAgentSession]);
@@ -424,6 +554,7 @@ export function useAgentChat({ agent, context }: UseAgentChatParams) {
     isGeneratingMap,
     diagnosisErrorMessage,
     mapErrorMessage,
+    streamingDiagnosisText,
     retryAfterSec,
     readyCount: session.progress.completed.length,
     missingLabels,

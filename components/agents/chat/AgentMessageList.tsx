@@ -7,6 +7,7 @@ interface AgentMessageListProps {
   messages: ChatMessage[];
   isSubmittingDiagnosis: boolean;
   isGeneratingMap: boolean;
+  streamingDiagnosisText: string;
   diagnosisErrorMessage: string | null;
   mapErrorMessage: string | null;
   onRetryQuestion: () => void;
@@ -17,6 +18,7 @@ export function AgentMessageList({
   messages,
   isSubmittingDiagnosis,
   isGeneratingMap,
+  streamingDiagnosisText,
   diagnosisErrorMessage,
   mapErrorMessage,
   onRetryQuestion,
@@ -37,7 +39,16 @@ export function AgentMessageList({
           </li>
         ))}
 
-        {isSubmittingDiagnosis && (
+        {isSubmittingDiagnosis && streamingDiagnosisText.length > 0 && (
+          <li
+            aria-live="polite"
+            className="max-w-[85%] rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-800"
+          >
+            {streamingDiagnosisText}
+          </li>
+        )}
+
+        {isSubmittingDiagnosis && streamingDiagnosisText.length === 0 && (
           <li
             aria-live="polite"
             className="max-w-[85%] rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-500"

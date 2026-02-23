@@ -56,6 +56,7 @@ export function isSecurityGuardsEnabled(): boolean {
 }
 
 export function resolveAllowedOrigins(request: Request): string[] {
+  const origins = new Set<string>(getSameOriginFromRequest(request));
   const configured = process.env.ALLOWED_ORIGINS;
   if (configured && configured.trim().length > 0) {
     const values = configured
@@ -64,11 +65,13 @@ export function resolveAllowedOrigins(request: Request): string[] {
       .filter((value): value is string => Boolean(value));
 
     if (values.length > 0) {
-      return Array.from(new Set(values));
+      for (const value of values) {
+        origins.add(value);
+      }
     }
   }
 
-  return getSameOriginFromRequest(request);
+  return Array.from(origins);
 }
 
 export function validateOrigin(request: Request): OriginCheckResult {

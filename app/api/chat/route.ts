@@ -1,32 +1,37 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { getDiagnosisPrompt, getMapPrompt } from "@/lib/agents/prompts";
+import { ApiError as GeminiApiError, GoogleGenAI } from "@google/genai";
+import { getDiagnosisStreamPrompt, getMapPrompt } from "@/lib/agents/prompts";
+import { encodeSseEvent } from "@/lib/chat/sse";
 import { parseChatRequest, validateChatRequestPayload } from "@/lib/chat/validator";
-import { createApiErrorResponse, createSuccessResponse, toUpstreamErrorResponse } from "@/lib/security/error";
+import {
+  createApiErrorPayload,
+  createApiErrorResponse,
+  createSuccessResponse,
+} from "@/lib/security/error";
 import { guardJsonRequest } from "@/lib/security/request-guard";
 import {
   AgentMapDocument,
+  ApiErrorResponse,
   ChatMessage,
   DIAGNOSTIC_DIMENSIONS,
   DiagnosticDimension,
-  DiagnosticProgress,
+  DiagnosisStreamDoneData,
+  DiagnosisStreamErrorEvent,
   SpecialistAgentType,
   UserContext,
 } from "@/lib/types";
-const DEFAULT_MODEL_CANDIDATES = [
-  "claude-sonnet-4-5",
-  "claude-sonnet-4-20250514",
-  "claude-3-7-sonnet-latest",
-  "claude-3-5-haiku-latest",
-];
+
+const DEFAULT_GEMINI_DIAGNOSIS_MODEL_CANDIDATES = ["gemini-2.5-flash", "gemini-2.0-flash"];
+const DEFAULT_GEMINI_MAP_MODEL_CANDIDATES = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"];
+const GEMINI_RATE_LIMIT_RETRY_AFTER_SEC = 60;
 
 interface CreatePayload {
   system: string;
   messages: ChatMessage[];
 }
 
-interface StructuredResponseAttempt<T> {
-  parsed: T | null;
-  lastText: string;
+interface GeminiContentMessage {
+  role: "user" | "model";
+  parts: Array<{ text: string }>;
 }
 
 const FALLBACK_USER_MESSAGE: ChatMessage = {
@@ -90,24 +95,21 @@ const DIAGNOSIS_DETAIL_TEMPLATES: Record<
   },
 };
 
-function extractText(content: Anthropic.Messages.Message["content"]): string {
-  return content
-    .filter((block): block is Anthropic.TextBlock => block.type === "text")
-    .map((block) => block.text)
-    .join("\n")
-    .trim();
-}
+function getGeminiModelCandidates(mode: "diagnosis" | "map"): string[] {
+  const configuredGlobalModel = process.env.GEMINI_MODEL?.trim();
+  const configuredModeModel =
+    mode === "diagnosis" ? process.env.GEMINI_DIAGNOSIS_MODEL?.trim() : process.env.GEMINI_MAP_MODEL?.trim();
+  const defaults =
+    mode === "diagnosis" ? DEFAULT_GEMINI_DIAGNOSIS_MODEL_CANDIDATES : DEFAULT_GEMINI_MAP_MODEL_CANDIDATES;
 
-function getModelCandidates(): string[] {
-  const configuredModel = process.env.ANTHROPIC_MODEL?.trim();
-  const models = [configuredModel, ...DEFAULT_MODEL_CANDIDATES].filter(
+  const models = [configuredModeModel, configuredGlobalModel, ...defaults].filter(
     (model): model is string => Boolean(model),
   );
 
   return Array.from(new Set(models));
 }
 
-function normalizeMessagesForAnthropic(messages: ChatMessage[]): ChatMessage[] {
+function normalizeMessagesForModel(messages: ChatMessage[]): ChatMessage[] {
   const baseMessages = messages.length > 0 ? messages : [FALLBACK_USER_MESSAGE];
   const normalized = [...baseMessages];
 
@@ -121,6 +123,15 @@ function normalizeMessagesForAnthropic(messages: ChatMessage[]): ChatMessage[] {
   }
 
   return normalized;
+}
+
+function normalizeMessagesForGemini(messages: ChatMessage[]): GeminiContentMessage[] {
+  const normalized = normalizeMessagesForModel(messages);
+
+  return normalized.map((message) => ({
+    role: message.role === "assistant" ? "model" : "user",
+    parts: [{ text: message.content }],
+  }));
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -147,163 +158,9 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
   });
 }
 
-async function createWithFallback(
-  anthropic: Anthropic,
-  createPayload: CreatePayload,
-): Promise<Anthropic.Messages.Message> {
-  const modelCandidates = getModelCandidates();
-  const safeMessages = normalizeMessagesForAnthropic(createPayload.messages);
-  let lastErrorMessage = "";
-
-  for (const model of modelCandidates) {
-    try {
-      return await withTimeout(
-        anthropic.messages.create({
-          model,
-          max_tokens: 1400,
-          temperature: 0.2,
-          system: createPayload.system,
-          messages: safeMessages.map((message) => ({
-            role: message.role,
-            content: message.content,
-          })),
-        }),
-        30000,
-        "CHAT_CALL",
-      );
-    } catch (error) {
-      lastErrorMessage = error instanceof Error ? error.message : "CHAT_CALL_FAILED";
-      continue;
-    }
-  }
-
-  throw new Error(
-    lastErrorMessage ||
-      `사용 가능한 모델을 찾지 못했습니다. .env.local의 ANTHROPIC_MODEL 값을 확인해 주세요. 시도한 모델: ${modelCandidates.join(
-        ", ",
-      )}`,
-  );
-}
-
-function extractJsonCandidate(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return trimmed;
-  }
-
-  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const withoutFence = fencedMatch ? fencedMatch[1].trim() : trimmed;
-
-  const firstBrace = withoutFence.indexOf("{");
-  const lastBrace = withoutFence.lastIndexOf("}");
-
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return withoutFence.slice(firstBrace, lastBrace + 1).trim();
-  }
-
-  return withoutFence;
-}
-
-function parseJsonResponse(raw: string): unknown | null {
-  const jsonCandidate = extractJsonCandidate(raw);
-  if (!jsonCandidate) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(jsonCandidate);
-  } catch {
-    return null;
-  }
-}
-
-function isDiagnosticDimension(value: unknown): value is DiagnosticDimension {
-  return typeof value === "string" && DIAGNOSTIC_DIMENSIONS.includes(value as DiagnosticDimension);
-}
-
-function toDiagnosticProgress(value: unknown): DiagnosticProgress | null {
-  if (typeof value !== "object" || value === null) {
-    return null;
-  }
-
-  const candidate = value as Partial<DiagnosticProgress>;
-  const completedFromModel = Array.isArray(candidate.completed)
-    ? candidate.completed.filter(isDiagnosticDimension)
-    : [];
-  const missingFromModel = Array.isArray(candidate.missing)
-    ? candidate.missing.filter(isDiagnosticDimension)
-    : DIAGNOSTIC_DIMENSIONS.filter((dimension) => !completedFromModel.includes(dimension));
-
-  const completed = DIAGNOSTIC_DIMENSIONS.filter(
-    (dimension) => completedFromModel.includes(dimension) && !missingFromModel.includes(dimension),
-  );
-  const missing = DIAGNOSTIC_DIMENSIONS.filter((dimension) => !completed.includes(dimension));
-
-  const readyFromModel =
-    typeof candidate.readyForMap === "boolean"
-      ? candidate.readyForMap
-      : typeof (candidate as { ready_for_map?: unknown }).ready_for_map === "boolean"
-        ? Boolean((candidate as { ready_for_map?: unknown }).ready_for_map)
-        : missing.length === 0;
-
-  return {
-    completed,
-    missing,
-    readyForMap: missing.length === 0 && readyFromModel,
-  };
-}
-
-function toDiagnosisPayload(value: unknown): { message: string; progress: DiagnosticProgress } | null {
-  if (typeof value !== "object" || value === null) {
-    return null;
-  }
-
-  const candidate = value as {
-    message?: unknown;
-    nextQuestion?: unknown;
-    question?: unknown;
-    progress?: unknown;
-    completed?: unknown;
-    missing?: unknown;
-    readyForMap?: unknown;
-    ready_for_map?: unknown;
-  };
-  const messageCandidate = [candidate.message, candidate.nextQuestion, candidate.question].find(
-    (item): item is string => typeof item === "string" && item.trim().length > 0,
-  );
-
-  if (!messageCandidate) {
-    return null;
-  }
-
-  const progress = toDiagnosticProgress(
-    candidate.progress ?? {
-      completed: candidate.completed,
-      missing: candidate.missing,
-      readyForMap: candidate.readyForMap,
-      ready_for_map: candidate.ready_for_map,
-    },
-  );
-  if (!progress) {
-    return null;
-  }
-
-  const normalizedMessage = messageCandidate.trim();
-  if (!normalizedMessage) {
-    return null;
-  }
-
-  const detailedMessage = formatDiagnosisMessage(normalizedMessage, progress);
-
-  return {
-    message: detailedMessage,
-    progress,
-  };
-}
-
 function pickDiagnosisMessageFromRawText(rawText: string): string | null {
   const cleaned = rawText
-    .replace(/```json/gi, "")
+    .replace(/```(?:json|md|markdown)?/gi, "")
     .replace(/```/g, "")
     .replace(/\r/g, "")
     .trim();
@@ -324,7 +181,7 @@ function pickDiagnosisMessageFromRawText(rawText: string): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function formatDiagnosisMessage(message: string, progress: DiagnosticProgress): string {
+function formatDiagnosisMessage(message: string, progress: DiagnosisStreamDoneData["progress"]): string {
   if (progress.readyForMap) {
     return "진단 핵심 항목이 모두 수집되었습니다. 에이전트 맵 생성 버튼을 눌러 결과를 확인하세요.";
   }
@@ -353,10 +210,7 @@ function formatDiagnosisMessage(message: string, progress: DiagnosticProgress): 
   ].join("\n");
 }
 
-function buildDiagnosisFallback(
-  rawText: string,
-  messages: ChatMessage[],
-): { message: string; progress: DiagnosticProgress } | null {
+function buildDiagnosisFallback(rawText: string, messages: ChatMessage[]): DiagnosisStreamDoneData {
   const baseMessage = pickDiagnosisMessageFromRawText(rawText) ?? "현재 상황을 구체적으로 알려주세요.";
 
   const userTurnCount = Math.min(
@@ -365,7 +219,7 @@ function buildDiagnosisFallback(
   );
   const completed = DIAGNOSTIC_DIMENSIONS.slice(0, userTurnCount);
   const missing = DIAGNOSTIC_DIMENSIONS.slice(userTurnCount);
-  const progress: DiagnosticProgress = {
+  const progress: DiagnosisStreamDoneData["progress"] = {
     completed,
     missing,
     readyForMap: missing.length === 0,
@@ -378,35 +232,208 @@ function buildDiagnosisFallback(
   };
 }
 
-async function createStructuredResponse<T>(
-  anthropic: Anthropic,
+function createDiagnosisStreamErrorPayload(error: unknown, requestId: string): DiagnosisStreamErrorEvent["data"] {
+  if (error instanceof GeminiApiError) {
+    return createApiErrorPayload({
+      ...mapGeminiError(error),
+      requestId,
+    });
+  }
+
+  return createApiErrorPayload({
+    status: 500,
+    errorCode: "INTERNAL_ERROR",
+    message: "예상하지 못한 서버 오류가 발생했습니다.",
+    recoverable: true,
+    requestId,
+  });
+}
+
+function isGeminiRateLimitedError(error: GeminiApiError): boolean {
+  if (error.status === 429) {
+    return true;
+  }
+
+  const message = error.message.toLowerCase();
+  return /quota|rate[\s-]?limit|resource_exhausted|too many requests/.test(message);
+}
+
+function mapGeminiError(error: GeminiApiError): Omit<ApiErrorResponse, "requestId"> & { status: number } {
+  if (isGeminiRateLimitedError(error)) {
+    return {
+      status: 429,
+      errorCode: "RATE_LIMITED",
+      message: "Gemini API 사용량 한도를 초과했습니다. 잠시 후 다시 시도해 주세요.",
+      recoverable: true,
+      retryAfterSec: GEMINI_RATE_LIMIT_RETRY_AFTER_SEC,
+    };
+  }
+
+  return {
+    status: 502,
+    errorCode: "UPSTREAM_UNAVAILABLE",
+    message: "외부 AI 서비스 응답이 불안정합니다. 잠시 후 다시 시도해 주세요.",
+    recoverable: true,
+  };
+}
+
+async function createDiagnosisStreamWithFallback(
+  gemini: GoogleGenAI,
   createPayload: CreatePayload,
-  parser: (value: unknown) => T | null,
-): Promise<StructuredResponseAttempt<T>> {
-  let lastText = "";
+  onToken: (token: string) => void,
+): Promise<string> {
+  const modelCandidates = getGeminiModelCandidates("diagnosis");
+  const safeMessages = normalizeMessagesForGemini(createPayload.messages);
+  let lastError: unknown = null;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (const model of modelCandidates) {
+    let emittedToken = false;
+    let collectedText = "";
+
     try {
-      const response = await createWithFallback(anthropic, createPayload);
-      const text = extractText(response.content);
-      lastText = text;
-      const parsedJson = parseJsonResponse(text);
+      const stream = await withTimeout(
+        gemini.models.generateContentStream({
+          model,
+          contents: safeMessages,
+          config: {
+            systemInstruction: createPayload.system,
+            maxOutputTokens: 1400,
+            temperature: 0.2,
+          },
+        }),
+        30000,
+        "CHAT_STREAM_CALL",
+      );
 
-      if (!parsedJson) {
-        continue;
+      for await (const chunk of stream) {
+        const text = typeof chunk.text === "string" ? chunk.text : "";
+        if (!text) {
+          continue;
+        }
+
+        emittedToken = true;
+        collectedText += text;
+        onToken(text);
       }
 
-      const parsed = parser(parsedJson);
-      if (parsed) {
-        return { parsed, lastText };
-      }
+      return collectedText;
     } catch (error) {
-      lastText = error instanceof Error ? error.message : "STRUCTURED_RESPONSE_FAILED";
+      lastError = error;
+      if (emittedToken) {
+        throw error;
+      }
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error(
+    `CHAT_STREAM_CALL_FAILED: ` +
+      `사용 가능한 모델을 찾지 못했습니다. .env.local의 GEMINI_MODEL 값을 확인해 주세요. 시도한 모델: ${modelCandidates.join(
+        ", ",
+      )}`,
+  );
+}
+
+async function createMapWithFallback(gemini: GoogleGenAI, createPayload: CreatePayload): Promise<string> {
+  const modelCandidates = getGeminiModelCandidates("map");
+  const safeMessages = normalizeMessagesForGemini(createPayload.messages);
+  let lastErrorMessage = "";
+
+  for (const model of modelCandidates) {
+    try {
+      const response = await withTimeout(
+        gemini.models.generateContent({
+          model,
+          contents: safeMessages,
+          config: {
+            systemInstruction: createPayload.system,
+            maxOutputTokens: 4096,
+            temperature: 0.2,
+          },
+        }),
+        45000,
+        "CHAT_MAP_CALL",
+      );
+
+      const text = typeof response.text === "string" ? response.text.trim() : "";
+      if (text.length > 0) {
+        return text;
+      }
+
+      lastErrorMessage = "CHAT_MAP_EMPTY_RESPONSE";
+    } catch (error) {
+      lastErrorMessage = error instanceof Error ? error.message : "CHAT_MAP_CALL_FAILED";
       continue;
     }
   }
 
-  return { parsed: null, lastText };
+  throw new Error(
+    lastErrorMessage ||
+      `사용 가능한 모델을 찾지 못했습니다. .env.local의 GEMINI_MODEL 값을 확인해 주세요. 시도한 모델: ${modelCandidates.join(
+        ", ",
+      )}`,
+  );
+}
+
+function createDiagnosisSseResponse(params: {
+  gemini: GoogleGenAI;
+  requestId: string;
+  agentType: SpecialistAgentType;
+  context: UserContext;
+  messages: ChatMessage[];
+}): Response {
+  const { gemini, requestId, agentType, context, messages } = params;
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const sendEvent = (event: string, payload: unknown): void => {
+        controller.enqueue(encoder.encode(encodeSseEvent(event, payload)));
+      };
+
+      void (async () => {
+        let collected = "";
+
+        try {
+          collected = await createDiagnosisStreamWithFallback(
+            gemini,
+            {
+              system: getDiagnosisStreamPrompt(agentType, context),
+              messages,
+            },
+            (token) => {
+              sendEvent("token", { text: token });
+            },
+          );
+
+          sendEvent("done", buildDiagnosisFallback(collected, messages));
+        } catch (error) {
+          if (error instanceof GeminiApiError) {
+            console.error("[api/chat] Gemini diagnosis stream failed", {
+              status: error.status,
+              message: error.message,
+            });
+          }
+          sendEvent("error", createDiagnosisStreamErrorPayload(error, requestId));
+        } finally {
+          controller.close();
+        }
+      })();
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store, no-transform",
+      Connection: "keep-alive",
+      "X-Request-Id": requestId,
+    },
+  });
 }
 
 function buildTranscript(messages: ChatMessage[]): string {
@@ -466,7 +493,7 @@ function buildFallbackMapMarkdown(
     "",
     "## 워크플로",
     "- 워크플로 1",
-    "  - 도구: Claude, Notion",
+    "  - 도구: Gemini, Notion",
     "  - 단계: 요구사항 정리 → 초안 생성 → 내부 검토 → 실행 반영",
     "  - 예상효과: 실행 준비 시간을 단축하고 의사결정 속도를 높임",
     "- 워크플로 2",
@@ -510,23 +537,7 @@ function buildMapDocument(agentType: SpecialistAgentType, markdown: string): Age
   };
 }
 
-function createRequestId(): string {
-  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
 export async function POST(request: Request): Promise<Response> {
-  const missingKeyRequestId = createRequestId();
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return createApiErrorResponse({
-      status: 500,
-      errorCode: "MISSING_API_KEY",
-      message: "서버에 ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다.",
-      recoverable: false,
-      requestId: missingKeyRequestId,
-    });
-  }
-
   const guard = await guardJsonRequest(request, {
     routeKey: "chat",
     maxBodyBytes: 64 * 1024,
@@ -544,58 +555,34 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const parsedRequest = guard.payload;
+    const geminiApiKey = process.env.GEMINI_API_KEY;
 
-    const anthropic = new Anthropic({ apiKey });
+    if (!geminiApiKey) {
+      return createApiErrorResponse({
+        status: 500,
+        errorCode: "MISSING_API_KEY",
+        message: "서버에 GEMINI_API_KEY 환경변수가 설정되지 않았습니다.",
+        recoverable: false,
+        requestId: guard.requestId,
+      });
+    }
+
+    const gemini = new GoogleGenAI({ apiKey: geminiApiKey });
 
     if (parsedRequest.mode === "diagnosis") {
-      const diagnosisAttempt = await createStructuredResponse(
-        anthropic,
-        {
-          system: getDiagnosisPrompt(parsedRequest.agentType, parsedRequest.context),
-          messages: parsedRequest.messages,
-        },
-        toDiagnosisPayload,
-      );
-      const diagnosis =
-        diagnosisAttempt.parsed ??
-        buildDiagnosisFallback(diagnosisAttempt.lastText, parsedRequest.messages);
-
-      if (!diagnosis) {
-        const fallback = buildDiagnosisFallback("", parsedRequest.messages);
-        if (!fallback) {
-          return createApiErrorResponse({
-            status: 502,
-            errorCode: "UPSTREAM_UNAVAILABLE",
-            message: "진단 응답 형식을 해석하지 못했습니다. 잠시 후 다시 시도해 주세요.",
-            recoverable: true,
-            requestId: guard.requestId,
-          });
-        }
-
-        return createSuccessResponse(
-          {
-            mode: "diagnosis" as const,
-            message: fallback.message,
-            progress: fallback.progress,
-          },
-          guard.requestId,
-        );
-      }
-
-      return createSuccessResponse(
-        {
-          mode: "diagnosis" as const,
-          message: diagnosis.message,
-          progress: diagnosis.progress,
-        },
-        guard.requestId,
-      );
+      return createDiagnosisSseResponse({
+        gemini,
+        requestId: guard.requestId,
+        agentType: parsedRequest.agentType,
+        context: parsedRequest.context,
+        messages: parsedRequest.messages,
+      });
     }
 
     let markdown = "";
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const response = await createWithFallback(anthropic, {
+        const rawText = await createMapWithFallback(gemini, {
           system: getMapPrompt(
             parsedRequest.agentType,
             parsedRequest.context,
@@ -604,7 +591,7 @@ export async function POST(request: Request): Promise<Response> {
           messages: parsedRequest.messages,
         });
 
-        markdown = normalizeMarkdownResponse(extractText(response.content));
+        markdown = normalizeMarkdownResponse(rawText);
         if (markdown.length > 0) {
           break;
         }
@@ -631,8 +618,15 @@ export async function POST(request: Request): Promise<Response> {
       guard.requestId,
     );
   } catch (error) {
-    if (error instanceof Anthropic.APIError) {
-      return toUpstreamErrorResponse(guard.requestId);
+    if (error instanceof GeminiApiError) {
+      console.error("[api/chat] Gemini map generation failed", {
+        status: error.status,
+        message: error.message,
+      });
+      return createApiErrorResponse({
+        ...mapGeminiError(error),
+        requestId: guard.requestId,
+      });
     }
 
     return createApiErrorResponse({

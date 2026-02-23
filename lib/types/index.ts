@@ -259,6 +259,35 @@ export interface GenerateMapChatResponse {
 
 export type ChatResponse = DiagnosisChatResponse | GenerateMapChatResponse;
 
+export interface DiagnosisStreamTokenData {
+  text: string;
+}
+
+export interface DiagnosisStreamDoneData {
+  message: string;
+  progress: DiagnosticProgress;
+}
+
+export interface DiagnosisStreamTokenEvent {
+  event: "token";
+  data: DiagnosisStreamTokenData;
+}
+
+export interface DiagnosisStreamDoneEvent {
+  event: "done";
+  data: DiagnosisStreamDoneData;
+}
+
+export interface DiagnosisStreamErrorEvent {
+  event: "error";
+  data: ApiErrorResponse;
+}
+
+export type DiagnosisStreamEvent =
+  | DiagnosisStreamTokenEvent
+  | DiagnosisStreamDoneEvent
+  | DiagnosisStreamErrorEvent;
+
 export interface TeamTurnRequest {
   context: UserContext;
   messages: TeamRoomMessage[];

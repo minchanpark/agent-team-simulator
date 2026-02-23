@@ -9,6 +9,19 @@ runConfig:
 
 # Environment variables and secrets.
 env:
+  # Gemini API key is loaded from Secret Manager at runtime.
+  - variable: GEMINI_API_KEY
+    secret: GEMINI_API_KEY
+    availability:
+      - RUNTIME
+  - variable: GEMINI_DIAGNOSIS_MODEL
+    value: gemini-2.5-flash
+    availability:
+      - RUNTIME
+  - variable: GEMINI_MAP_MODEL
+    value: gemini-2.5-pro
+    availability:
+      - RUNTIME
   # Anthropic API key is loaded from Secret Manager at runtime.
   - variable: ANTHROPIC_API_KEY
     secret: ANTHROPIC_API_KEY

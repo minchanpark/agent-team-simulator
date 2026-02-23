@@ -46,4 +46,21 @@ describe("origin validation", () => {
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe("origin_not_allowed");
   });
+
+  it("keeps same-origin allowed even when ALLOWED_ORIGINS is configured", () => {
+    process.env.SECURITY_GUARDS_ENABLED = "true";
+    process.env.ALLOWED_ORIGINS = "https://allowed.example.com";
+
+    const request = new Request("http://localhost:3001/api/chat", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3001",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ ok: true }),
+    });
+
+    const result = validateOrigin(request);
+    expect(result.allowed).toBe(true);
+  });
 });
